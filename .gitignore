@@ -1,0 +1,17 @@
+# Android / Gradle
+.gradle/
+build/
+*/build/
+local.properties
+.idea/
+*.iml
+captures/
+.externalNativeBuild/
+.cxx/
+*.keystore
+*.jks
+# secrets
+.env
+secrets.properties
+# test tools output
+tools/inbox/
