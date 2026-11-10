@@ -43,7 +43,9 @@ policies do not apply.
 Remaining Phase 0 task for the implementer (with the user): collect **5–10 real filenames** covering
 contact, unknown number, private/hidden number, "Suspected spam", "Potential fraud" (and any other label seen),
 and save them in `docs/phase0-findings.md` + as unit-test fixtures for the filename parser (§2.3).
-Also note codec/extension, and file size per minute.
+Also note codec/extension, file size per minute, and **channel count** (copy one file to a PC and run
+`ffprobe -hide_banner file.m4a`): if recordings are **stereo with each side on its own channel**, speaker
+separation (§5) becomes trivial and exact; if mono, it needs diarization.
 
 ### 0.3 Existing solutions (checked 2026-11-10)
 - **Tiro** (Android) — watches Galaxy call recordings and auto-transcribes new ones with a persistent
@@ -68,7 +70,7 @@ Samsung Phone app  ──saves──▶  /sdcard/Recordings/Call/*.m4a
                                    ▼
                   ScanWorker: sync MediaStore → Room; RuleEngine: auto or skip
                                    ▼   (insert row into Room, status=NEW)
-                  ProcessWorker (one per recording, unique work name = mediaId)
+                  ProcessWorker (one per recording, unique work name = recording row id)
                      ├─ Phase 1: Forwarder (webhook / Home Assistant / file copy) 
                      ├─ Phase 2: Transcriber → RunPod ivrit.ai endpoint
                      └─ Phase 3: CallAnalyzer → Claude API (summary + spam verdict, JSON)
@@ -105,6 +107,25 @@ interface CallAnalyzer {
   `OpenAiCompatibleWhisperTranscriber` (one impl covers many self-hosted servers exposing
   `POST /v1/audio/transcriptions`, e.g. faster-whisper servers running an ivrit.ai model on your own PC),
   `OnDeviceWhisperTranscriber` (whisper.cpp), and other LLM analyzers. Adding one = one class + registry entry.
+
+### 1.1a Bring your own services (hard requirement)
+The app is meant to be shared freely; **the developer never pays for other users' processing**.
+- **Nothing is hard-coded**: no default endpoint IDs, URLs, API keys or accounts in the source, build config,
+  or CI. A fresh install cannot send audio anywhere until the user configures a provider.
+- **First-run setup** (after permissions): "Set up transcription" → pick a provider → fill its fields
+  (RunPod endpoint ID + API key) → **Test connection** (sends a bundled 3-second Hebrew sample clip and shows the text).
+  Same for "Set up AI analysis" (Anthropic API key + model → Test with a fixture transcript). Both steps can be
+  skipped; the app then works as a recordings browser, and the Transcribe button opens the setup screen.
+- Each provider's settings section has a **"How to get this"** link to the README section with step-by-step setup
+  (RunPod template deploy; Anthropic Console API key) and a rough cost per call-minute.
+- Keys are stored encrypted on the device only (Keystore-backed), excluded from Android backup
+  (`android:dataExtractionRules` / `fullBackupContent` exclude the secrets file), never logged, never shown in full after saving.
+- Optional convenience: **export/import provider settings** as a JSON file or QR code *without* keys by default
+  (checkbox "include keys" with a warning) — lets a user move to a new phone or set up a family member's phone
+  with their *own* endpoint.
+- No analytics, no crash reporting to the developer, no network calls except to the user's configured providers.
+- Because users will differ in what they can host, the `OpenAiCompatibleWhisperTranscriber` (§1.1, later) is the
+  most valuable second provider: it lets a user run an ivrit.ai model on their own PC/home server for free.
 
 ### 1.2 Product features (POC scope)
 - **Call list** = recordings found in MediaStore (not the system call log). Each row: counterparty, Samsung
@@ -169,10 +190,13 @@ app/src/main/java/.../callscribe/
 
 ### Data model (Room)
 ```kotlin
-@Entity(tableName = "recordings", indices = [Index(value = ["mediaId"], unique = true)])
+@Entity(tableName = "recordings", indices = [Index(value = ["contentHash"], unique = true), Index("mediaId")])
 data class RecordingEntity(
   @PrimaryKey(autoGenerate = true) val id: Long = 0,
-  val mediaId: Long,              // MediaStore _ID
+  val contentHash: String,        // SHA-256 of the file — the real identity (unique index)
+  val mediaId: Long,              // MediaStore _ID — lookup hint only, may change
+  val dateModifiedSec: Long,      // with sizeBytes: cheap "unchanged?" check before re-hashing
+  val fileMissing: Boolean = false,
   val uri: String,                // content://media/external/audio/media/<id>
   val displayName: String,
   val relativePath: String,       // "Recordings/Call/"
@@ -233,7 +257,17 @@ contentResolver.query(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXT
   folder for screened calls. Allow a list of prefixes.
 - Stability check: skip files with `SIZE == 0` or whose size changed in the last 5 s (re-query once after
   a 5 s delay before accepting). Samsung writes the file after hang-up, but be defensive.
-- Dedup: insert into Room with `OnConflictStrategy.IGNORE` on `mediaId`.
+- **Recording identity — content hash, with `mediaId` only as a lookup hint.** MediaStore `_ID` is *not* stable:
+  it changes when the media database is rebuilt (restore, phone migration, some OS updates) or the file is
+  moved/renamed. Keying on it would duplicate rows and pay for transcription twice.
+  - `contentHash` = SHA-256 of the whole file (call recordings are ~0.1–1 MB/min, so hashing takes milliseconds;
+    stream it, don't load the file into memory). Unique index on `contentHash`.
+  - Sync algorithm per MediaStore row: (1) row with this `mediaId` exists and `size`+`dateModified` unchanged → nothing
+    to do (no re-hash); (2) otherwise hash the file; if a row with that hash exists → **re-link** it (update `mediaId`,
+    `uri`, `displayName`, `relativePath`) and keep its transcript/analysis; else insert a new row.
+  - A row whose file disappeared is marked `fileMissing = true` (not deleted — its transcript stays useful);
+    a "Remove entries without audio" action cleans them up.
+  - Unit-test: renamed file keeps its transcript; same file seen with a new `_ID` is not duplicated.
 - **Listing vs auto-processing**: the scanner lists *all* recordings in the folder (a full sync on first run
   and on "Rescan"; incremental by `DATE_ADDED` afterwards; rows whose file was deleted are removed).
   The watermark `autoProcessFromSec` (DataStore, set to *now* on first run) only limits which rows are
@@ -273,9 +307,9 @@ contentResolver.query(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXT
 - Enqueue both from `CallScribeApp.onCreate()`, `BootReceiver`, and after permissions are granted.
 - `ScanWorker` runs the scanner, inserts new rows, and for each new row with `dateAdded ≥ autoProcessFromSec`
   asks `RuleEngine.decide(...)`: AUTO → status QUEUED and enqueue a `ProcessWorker`; SKIP → status SKIPPED_BY_RULE.
-  `ProcessWorker` uses `enqueueUniqueWork("process-${mediaId}", KEEP, ...)` with `NetworkType.CONNECTED` and
+  `ProcessWorker` uses `enqueueUniqueWork("process-${recordingId}", KEEP, ...)` with `NetworkType.CONNECTED` and
   exponential backoff 30 s. Input data: `force` (manual tap), `steps` (`transcribe`, `analyze`, `export`).
-- The **Transcribe / Analyze buttons** in the UI call the same `WorkScheduler.enqueueProcess(mediaId, force = true, steps)`
+- The **Transcribe / Analyze buttons** in the UI call the same `WorkScheduler.enqueueProcess(recordingId, force = true, steps)`
   — one code path for manual and automatic processing.
 
 ### 2.5 Forwarding (Phase 1 target)
@@ -470,6 +504,23 @@ Cap transcript at ~30k characters (calls rarely exceed this; if exceeded, tell t
 ---
 
 ## 5. Phase 4 (optional, later)
+- **Speaker separation ("who said what")** — show the transcript as a chat: *Me* vs *Caller* (or Speaker 1/2/3 on
+  conference calls). The `Segment.speaker` field already exists, so this needs no schema change. Strategy chosen
+  by what Phase 0 found:
+  1. **Stereo recording, one side per channel** (best case): split the channels on the phone (MediaCodec decode →
+     two mono PCM/WAV streams, or one transcription request per channel), transcribe each, merge segments by
+     start time, label uplink = *Me*, downlink = *Caller*. Exact, no ML needed.
+  2. **Mono recording**: use diarization in the transcriber — the ivrit.ai RunPod handler supports
+     `diarize: true` with the `stable-whisper` engine (pyannote-based), returning speaker labels per segment.
+     Diarization says *Speaker A/B*, not *who is who*: map them with a heuristic (who speaks first on an incoming
+     call is usually *Me* answering, or the screening assistant on screened calls) and let the LLM confirm/override
+     in `Analysis` (add `speakerRoles: Map<String, "me"|"caller"|"assistant">`). The user can swap labels by tapping
+     a speaker chip; store the override on the row.
+  3. Later: voice enrollment (record a short sample of the user's voice once, match speaker embeddings) for
+     reliable *Me* labelling without the LLM.
+  - Screened calls have a third voice — Samsung's AI assistant. Prompt the analyzer to recognise it so the
+    summary focuses on what the caller said.
+  - UI: chat-bubble transcript (RTL), color per speaker, tap a bubble to seek audio to `startSec`.
 - **Caller number from call log**: `READ_CALL_LOG` (runtime, "dangerous" but allowed for sideloaded apps);
   match `CallLog.Calls.DATE + DURATION` to the recording's `DATE_ADDED` ±60 s. Show if number is in contacts.
 - **Auto-actions**: if verdict = spam with confidence > 0.9, offer a notification action "Block number"
