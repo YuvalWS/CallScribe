@@ -20,7 +20,18 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Sideloaded app: signed with the local debug key unless a release keystore is configured.
+            signingConfig = signingConfigs.getByName("debug")
+        }
+        debug {
+            // `-PminifyDebug` runs R8 on a debug build, to smoke-test keep rules with the adb debug hooks.
+            if (project.hasProperty("minifyDebug")) {
+                isMinifyEnabled = true
+                proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            }
         }
     }
     compileOptions {

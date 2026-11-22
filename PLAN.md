@@ -503,6 +503,34 @@ Cap transcript at ~30k characters (calls rarely exceed this; if exceeded, tell t
 
 ---
 
+## 4a. Implementation status (2026-11-23)
+Built and verified on a Galaxy S20 FE (Android 13, One UI 5.1) with 372 real recordings:
+- Phases 1–3 implemented (see `app/`). 23+ unit tests pass (parser, rules, sync/hash identity,
+  real RunPod response fixture).
+- Scan: 372 files indexed in ~14 s on first run (hashing); later scans re-hash nothing.
+- Samsung labels confirmed on One UI 5 too: `Call recording Suspected Spam_…`, `Call recording Potential Fraud_…`.
+- Recordings are **mono** AAC 44.1 kHz ~128 kbps (~1 MB/min) → speaker separation needs diarization (§5).
+- RunPod: real `/run` + `/status` round trips; 16 s clip = 3 s GPU; 14 min call (compressed on-phone to
+  3.3 MB in ~96 s) = 14 s GPU ≈ $0.003.
+- Claude SDK verified on-device (also after R8) with an invalid key → clean 401 handling. **Not yet run
+  with a real key** — needs the user's Anthropic key.
+- **Cost view** done: per-call transcription (GPU-seconds × user-set $/s, an estimate) and analysis
+  (tokens × list price) costs, plus the total in the call list header.
+- Not yet verified visually: UI screens (phone was locked during development).
+
+## 4b. TODO (requested 2026-11-22, not started unless noted)
+- **Retention policy for the recordings themselves** — delete (via MediaStore *trash*, recoverable for
+  30 days) recordings older than N days, per group/contact, reusing the include/exclude matcher
+  (`RuleEngine.matches`) with a new `RuleList.RETENTION`. Options: keep forever / delete audio after N days
+  but keep transcript / delete everything after N days. Deleting other apps' media needs user consent per
+  batch (`MediaStore.createTrashRequest`) unless the user grants *Media management* (`MANAGE_MEDIA`) special access,
+  which allows it silently. Always show a preview ("N recordings, X MB") before the first run.
+- **Google Drive backup & sync** — back up the DB (transcripts, analyses, rules; never API keys) and optionally
+  the audio to the user's own Drive app-data folder (`drive.appdata` scope via Google Sign-In / Credential Manager
+  + Drive REST). Restore on a new phone re-links rows to audio by content hash. Needs an OAuth client ID created by
+  whoever builds the app (document in README).
+- **Cost view** — ✅ done (see 4a). Later: monthly totals and a budget alert.
+
 ## 5. Phase 4 (optional, later)
 - **Speaker separation ("who said what")** — show the transcript as a chat: *Me* vs *Caller* (or Speaker 1/2/3 on
   conference calls). The `Segment.speaker` field already exists, so this needs no schema change. Strategy chosen
