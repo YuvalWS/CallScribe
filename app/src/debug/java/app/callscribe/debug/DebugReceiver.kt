@@ -61,6 +61,28 @@ class DebugWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
                     Log.i(TAG, "claude analyze(): " + runCatching { an.analyze("שלום, זו הודעה מוקלטת", meta) }
                         .fold({ it.toString() }, { "${it.javaClass.simpleName}: ${it.message}" }))
                 }
+                "app.callscribe.DEBUG_FAKE_RUNPOD" -> {
+                    // Point the transcriber at a fake server on the dev PC (adb reverse tcp:8099 tcp:8099).
+                    graph.settings.update { it.copy(runpodBaseUrl = "http://127.0.0.1:8099/v2", runpodEndpointId = "fake") }
+                    graph.secrets.set(app.callscribe.data.SecretStore.Key.RUNPOD_API_KEY, "fake-key-not-a-secret")
+                    Log.i(TAG, "transcriber -> fake server")
+                }
+                "app.callscribe.DEBUG_RESET_PROVIDER" -> {
+                    graph.settings.update { it.copy(runpodBaseUrl = app.callscribe.data.AppSettings().runpodBaseUrl, runpodEndpointId = "") }
+                    graph.secrets.set(app.callscribe.data.SecretStore.Key.RUNPOD_API_KEY, null)
+                    Log.i(TAG, "transcriber settings reset")
+                }
+                "app.callscribe.DEBUG_PROCESS" -> {
+                    val id = inputData.getLong("id", -1)
+                    app.callscribe.detect.WorkScheduler.enqueueProcess(
+                        applicationContext, id, setOf(app.callscribe.pipeline.ProcessWorker.STEP_TRANSCRIBE, app.callscribe.pipeline.ProcessWorker.STEP_ANALYZE), force = true,
+                    )
+                    Log.i(TAG, "enqueued process $id")
+                }
+                "app.callscribe.DEBUG_SHOW" -> {
+                    val r = graph.db.recordings().get(inputData.getLong("id", -1))
+                    Log.i(TAG, "row ${r?.id}: status=${r?.status} error=${r?.error} segs=${r?.transcriptJson?.length} text=${r?.transcriptText?.take(40)} cost=${r?.transcriptionCostUsd} gpuMs=${r?.transcriptionGpuMs} job=${r?.providerJobId}")
+                }
                 "app.callscribe.DEBUG_DUMP" -> {
                     val all = graph.db.recordings().all()
                     Log.i(TAG, "rows=${all.size} by kind=${all.groupingBy { it.labelKind }.eachCount()} by status=${all.groupingBy { it.status }.eachCount()}")

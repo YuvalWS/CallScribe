@@ -86,6 +86,7 @@ class ProviderRegistry(private val secrets: SecretStore) {
             model = s.runpodModel,
             diarize = s.diarize,
             pricePerSec = s.runpodPricePerSec,
+            baseUrl = s.runpodBaseUrl,
         )
         else -> null
     }

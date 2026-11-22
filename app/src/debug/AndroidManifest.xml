@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
-        <!-- Debug builds only; not exported, reachable from adb via the shell user. -->
+    <application android:networkSecurityConfig="@xml/network_security_config">
+        <!-- Debug builds only; callable from adb (shell holds DUMP). -->
         <receiver android:name=".debug.DebugReceiver" android:exported="true"
             android:permission="android.permission.DUMP" />
     </application>

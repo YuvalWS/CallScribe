@@ -35,6 +35,8 @@ data class AppSettings(
     val transcriberId: String = "ivrit-runpod",
     val analyzerId: String = "claude",
     val runpodEndpointId: String = "",
+    /** Only changed by debug builds (fake server tests). */
+    val runpodBaseUrl: String = "https://api.runpod.ai/v2",
     val runpodModel: String = "ivrit-ai/whisper-large-v3-turbo-ct2",
     /** USD per second of GPU execution, used for the cost estimate. User-editable; depends on the GPU chosen on RunPod. */
     val runpodPricePerSec: Double = 0.00019,
@@ -59,6 +61,7 @@ class SettingsRepository(private val context: Context) {
         val transcriber = stringPreferencesKey("transcriber_id")
         val analyzer = stringPreferencesKey("analyzer_id")
         val rpEndpoint = stringPreferencesKey("runpod_endpoint")
+        val rpBase = stringPreferencesKey("runpod_base_url")
         val rpModel = stringPreferencesKey("runpod_model")
         val rpPrice = doublePreferencesKey("runpod_price_per_sec")
         val diarize = booleanPreferencesKey("diarize")
@@ -90,6 +93,7 @@ class SettingsRepository(private val context: Context) {
             transcriberId = this[K.transcriber] ?: d.transcriberId,
             analyzerId = this[K.analyzer] ?: d.analyzerId,
             runpodEndpointId = this[K.rpEndpoint] ?: d.runpodEndpointId,
+            runpodBaseUrl = this[K.rpBase] ?: d.runpodBaseUrl,
             runpodModel = this[K.rpModel] ?: d.runpodModel,
             runpodPricePerSec = this[K.rpPrice] ?: d.runpodPricePerSec,
             diarize = this[K.diarize] ?: d.diarize,
@@ -115,6 +119,7 @@ class SettingsRepository(private val context: Context) {
             p[K.transcriber] = s.transcriberId
             p[K.analyzer] = s.analyzerId
             p[K.rpEndpoint] = s.runpodEndpointId
+            p[K.rpBase] = s.runpodBaseUrl
             p[K.rpModel] = s.runpodModel
             p[K.rpPrice] = s.runpodPricePerSec
             p[K.diarize] = s.diarize
