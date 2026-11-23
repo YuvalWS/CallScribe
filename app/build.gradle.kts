@@ -5,16 +5,35 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+// CI passes -PbuildNumber=<run number>: versionCode = N, versionName = <callscribe.version>.N (see docs/plans/cicd.md).
+val buildNumber = providers.gradleProperty("buildNumber").orNull?.toInt()
+val baseVersion = providers.gradleProperty("callscribe.version").getOrElse("0.1")
+
+// Release signing from environment variables (CI secrets); falls back to the debug key when absent.
+val releaseKeystore = providers.environmentVariable("CALLSCRIBE_KEYSTORE_FILE").orNull
+    ?.let { file(it) }?.takeIf { it.isFile }
+
 android {
     namespace = "app.callscribe"
     compileSdk = 37
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = providers.environmentVariable("CALLSCRIBE_KEYSTORE_PASSWORD").get()
+                keyAlias = providers.environmentVariable("CALLSCRIBE_KEY_ALIAS").get()
+                keyPassword = providers.environmentVariable("CALLSCRIBE_KEY_PASSWORD").get()
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "app.callscribe"
         minSdk = 33
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = buildNumber ?: 1
+        versionName = if (buildNumber != null) "$baseVersion.$buildNumber" else "$baseVersion.0-local"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -24,7 +43,7 @@ android {
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Sideloaded app: signed with the local debug key unless a release keystore is configured.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
         debug {
             // `-PminifyDebug` runs R8 on a debug build, to smoke-test keep rules with the adb debug hooks.

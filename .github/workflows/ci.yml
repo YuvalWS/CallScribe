@@ -1,0 +1,166 @@
+# CI/CD for CallScribe — see docs/plans/cicd.md.
+# PRs and pushes to dev/main: unit tests + APK artifact.
+# Pushes to main: signed R8 release APK + GitHub Release.
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths-ignore: ['**.md', 'docs/**']
+  push:
+    branches: [dev, main]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A new push to a PR cancels its older run; dev/main runs always finish (main runs are releases).
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  IS_RELEASE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      version: ${{ steps.version.outputs.name }}
+      signing: ${{ steps.signing.outputs.kind }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Android platform 37
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;36.0.0" > /dev/null
+
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          # Only dev/main runs write the cache; PR runs reuse it.
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+
+      - name: Version
+        id: version
+        run: |
+          base=$(grep '^callscribe.version=' gradle.properties | cut -d= -f2)
+          echo "name=${base}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "Building ${base}.${GITHUB_RUN_NUMBER} (versionCode ${GITHUB_RUN_NUMBER})"
+
+      - name: Unit tests
+        run: ./gradlew :app:testDebugUnitTest -PbuildNumber=${{ github.run_number }}
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-reports
+          path: app/build/reports/tests/
+          retention-days: 7
+
+      # ---- PRs, dev, manual runs: debug APK (fast, no R8) ----
+      - name: Build debug APK
+        if: env.IS_RELEASE != 'true'
+        run: |
+          ./gradlew :app:assembleDebug -PbuildNumber=${{ github.run_number }}
+          mv app/build/outputs/apk/debug/app-debug.apk "callscribe-${{ steps.version.outputs.name }}-debug.apk"
+
+      - name: Upload debug APK
+        if: env.IS_RELEASE != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: callscribe-${{ steps.version.outputs.name }}-debug
+          path: callscribe-*-debug.apk
+          retention-days: 3 # ~118 MB each; keeps a private repo inside the free 500 MB storage
+          compression-level: 0 # APKs are already compressed
+
+      # ---- push to main: signed release APK ----
+      - name: Decode release keystore
+        id: signing
+        if: env.IS_RELEASE == 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.CALLSCRIBE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+            echo "CALLSCRIBE_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+            echo "kind=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::CALLSCRIBE_KEYSTORE_BASE64 is not set: the release APK is signed with a throw-away debug key."
+            echo "kind=debug" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build release APK
+        if: env.IS_RELEASE == 'true'
+        env:
+          CALLSCRIBE_KEYSTORE_PASSWORD: ${{ secrets.CALLSCRIBE_KEYSTORE_PASSWORD }}
+          CALLSCRIBE_KEY_ALIAS: ${{ secrets.CALLSCRIBE_KEY_ALIAS }}
+          CALLSCRIBE_KEY_PASSWORD: ${{ secrets.CALLSCRIBE_KEY_PASSWORD }}
+        run: |
+          ./gradlew :app:assembleRelease -PbuildNumber=${{ github.run_number }}
+          mv app/build/outputs/apk/release/app-release.apk "callscribe-${{ steps.version.outputs.name }}.apk"
+          rm -f "$RUNNER_TEMP/release.jks"
+
+      - name: Upload release APK
+        if: env.IS_RELEASE == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: callscribe-release
+          path: callscribe-${{ steps.version.outputs.name }}.apk
+          retention-days: 1 # the copy that matters is attached to the GitHub Release
+          compression-level: 0
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history + tags for the release notes
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: callscribe-release
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SIGNING: ${{ needs.build.outputs.signing }}
+        run: |
+          tag="v${VERSION}"
+          apk="callscribe-${VERSION}.apk"
+          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          {
+            if [ "$SIGNING" != "release" ]; then
+              echo "> [!WARNING]"
+              echo "> Signed with a throw-away **debug key** (release keystore secrets are not configured)."
+              echo "> It cannot be installed as an update over another build: uninstall CallScribe first."
+              echo
+            fi
+            if [ -n "$prev" ]; then
+              echo "## Changes since ${prev}"
+              range="${prev}..HEAD"
+            else
+              echo "## Changes"
+              range="HEAD"
+            fi
+            echo
+            git log --no-merges --pretty='- %s (%h)' "$range" | head -n 200
+          } > notes.md
+          cat notes.md
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" "$apk" --clobber # re-run of the same workflow run
+          else
+            gh release create "$tag" "$apk" --target "$GITHUB_SHA" --title "CallScribe ${VERSION}" --notes-file notes.md
+          fi

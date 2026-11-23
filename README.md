@@ -68,6 +68,58 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 
 Debug builds include adb hooks for development (see `app/src/debug`).
 
+To sign a local release build with the release key, set `CALLSCRIBE_KEYSTORE_FILE`,
+`CALLSCRIBE_KEYSTORE_PASSWORD`, `CALLSCRIBE_KEY_ALIAS` and `CALLSCRIBE_KEY_PASSWORD`; without them the
+release APK is signed with your debug key.
+
+## CI/CD (GitHub Actions)
+`.github/workflows/ci.yml` (design and cost details: [docs/plans/cicd.md](docs/plans/cicd.md)):
+
+| Event | What runs | Output |
+|---|---|---|
+| PR into `dev` or `main`, push to `dev` | unit tests + `assembleDebug` | debug APK as a workflow artifact (kept 3 days) |
+| push / merge to `main` | unit tests + signed R8 `assembleRelease` | GitHub Release `v0.1.<run>` with the APK and notes from the commits |
+
+Docs-only changes (`*.md`, `docs/**`) don't trigger a run. Versions are `versionCode = <run number>`,
+`versionName = <callscribe.version in gradle.properties>.<run number>`, so every release installs as an
+update over the previous one.
+
+**Cost:** the repo is public, so GitHub Actions minutes and artifact storage are free and unlimited
+on the free plan. (A private copy would get ≈ 2,000 Linux minutes a month — roughly 150 PR runs plus
+30 releases — see the plan doc.)
+
+### Branches
+`feature/…` → PR into **`dev`** (integration; CI builds a debug APK) → PR `dev` → **`main`** (every
+merge is a release). Don't commit straight to `main`.
+
+### Release signing setup (once)
+The repo ([YuvalWS/CallScribe](https://github.com/YuvalWS/CallScribe)) and its `main` / `dev` branches
+exist. Run these from the repo root in PowerShell with the [GitHub CLI](https://cli.github.com)
+(`gh auth login` first).
+
+Create the release key once (with any JDK's `keytool`; `JAVA_HOME` points at your JDK), **outside the repo**, and back it up with its password (lose it and you
+can never ship an update to existing installs):
+
+```powershell
+& "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -v -keystore "$HOME\callscribe-release.jks" -alias callscribe -keyalg RSA -keysize 4096 -validity 10000
+```
+
+Add it as repository secrets (`gh secret set NAME` with no `--body` prompts for the value):
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\callscribe-release.jks")) | gh secret set CALLSCRIBE_KEYSTORE_BASE64
+gh secret set CALLSCRIBE_KEYSTORE_PASSWORD
+gh secret set CALLSCRIBE_KEY_ALIAS --body callscribe
+gh secret set CALLSCRIBE_KEY_PASSWORD
+```
+
+(keytool's default PKCS12 keystore uses the same password for store and key.) Without these secrets
+releases are still published, signed with a throw-away debug key and marked with a warning.
+
+**Switching to the release key:** an install signed with your PC's debug key can't be updated by a
+release-key APK. Uninstall CallScribe once (this deletes its local data), then install from the Releases
+page; later releases update in place.
+
 ## Privacy
 Recordings stay on the phone unless a call is processed. Then the audio goes to *your* RunPod
 endpoint and the transcript to *your* AI provider. No analytics, no crash reporting.
