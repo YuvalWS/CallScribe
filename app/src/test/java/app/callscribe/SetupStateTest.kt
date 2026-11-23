@@ -14,7 +14,7 @@ import org.junit.Test
 class SetupStateTest {
     private val all = SetupStatus(
         audioGranted = true, notificationsGranted = true, recordingCount = 3,
-        batteryUnrestricted = true, transcriberConfigured = true, analyzerConfigured = true,
+        batteryUnrestricted = true, transcriberConfigured = true, analyzerConfigured = true, driveBackupOn = true,
     )
 
     @Test fun everythingDone() {

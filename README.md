@@ -76,7 +76,11 @@ Because there is no shared CallScribe server or Google project, **whoever builds
 4. **Audience**: the quickest start is to keep *Testing* and add your Google account under **Test users**. In Testing
    mode Google may expire the grant after 7 days; CallScribe then pauses backups and notifies you to reconnect (one tap).
    To avoid that, **Publish app** — Google requires, on the Branding page, a home page and privacy-policy URL on a
-   domain you verified in Google Search Console (no review is needed for `drive.file`, as long as you upload no logo).
+   domain you verified in Google Search Console, listed under *Authorized domains* (no review is needed for
+   `drive.file`, as long as you upload no logo). This repo's `site/` folder is such a home page + privacy policy:
+   publish it with GitHub Pages from a `gh-pages` branch (put your domain in `site/CNAME` and add a DNS CNAME
+   record `<subdomain>` → `<github-user>.github.io`, not proxied). The official builds use
+   https://callscribe.yuweiss.dev/.
 5. Get the **SHA-1** of the key that signs the APK you install:
    - Local builds (debug key, also used for release builds unless you configured a release keystore):
      ```powershell

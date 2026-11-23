@@ -1,5 +1,6 @@
 package app.callscribe
 
+import app.callscribe.backup.BackupDevice
 import app.callscribe.backup.BackupFormat
 import app.callscribe.backup.BackupSource
 import app.callscribe.backup.DriveApi
@@ -79,6 +80,7 @@ class FakeDriveApi : DriveApi {
 
 class DriveBackupTest {
     private val now = 1_800_000_000L
+    private val dev = BackupDevice("device-1", "Galaxy S20 FE")
     private val day = 86_400L
 
     private fun rec(n: Int, ageDays: Long = 1, text: String? = "שלום", kind: LabelKind = LabelKind.UNKNOWN_NUMBER) = RecordingEntity(
@@ -107,7 +109,7 @@ class DriveBackupTest {
         val drive = FakeDriveApi()
         val engine = DriveBackupEngine(drive, ZoneOffset.UTC)
         val src = Source(listOf(rec(1), rec(2)))
-        val r1 = engine.backup(src, includeAudio = true, nowSec = now)
+        val r1 = engine.backup(dev, src, includeAudio = true, nowSec = now)
         assertEquals(2, r1.callsUploaded)
         assertEquals(2, r1.audioUploaded)
         assertEquals(2, drive.filesIn(BackupFormat.KIND_CALL).size)
@@ -116,21 +118,21 @@ class DriveBackupTest {
         assertEquals(1, drive.filesIn(BackupFormat.KIND_MANIFEST).size)
         // One root, Calls and Recordings folder, found again by property — not duplicated.
         val before = drive.uploads
-        val r2 = engine.backup(src, includeAudio = true, nowSec = now + 60)
+        val r2 = engine.backup(dev, src, includeAudio = true, nowSec = now + 60)
         assertEquals(0, r2.callsUploaded)
         assertEquals(0, r2.audioUploaded)
         assertEquals(before + 1, drive.uploads) // the manifest only
-        assertEquals(3, drive.live().count { it.folder })
+        assertEquals(4, drive.live().count { it.folder }) // top, this phone, Calls, Recordings
     }
 
     @Test fun changedRowIsUpdatedInPlace() = runBlocking {
         val drive = FakeDriveApi()
         val engine = DriveBackupEngine(drive, ZoneOffset.UTC)
         val src = Source(listOf(rec(1), rec(2)))
-        engine.backup(src, includeAudio = false, nowSec = now)
+        engine.backup(dev, src, includeAudio = false, nowSec = now)
         // Device-only changes (new MediaStore id after a rename, updatedAt) don't count as changes.
         src.rows = listOf(rec(1).copy(mediaId = 999, uri = "content://x", updatedAt = 5), rec(2).copy(summary = "Loan offer"))
-        val r = engine.backup(src, includeAudio = false, nowSec = now)
+        val r = engine.backup(dev, src, includeAudio = false, nowSec = now)
         assertEquals(1, r.callsUploaded)
         val calls = drive.filesIn(BackupFormat.KIND_CALL)
         assertEquals(2, calls.size)
@@ -143,23 +145,23 @@ class DriveBackupTest {
         val drive = FakeDriveApi()
         val engine = DriveBackupEngine(drive, ZoneOffset.UTC)
         val src = Source(listOf(rec(1), rec(2).copy(fileMissing = true), rec(3).copy(audioDeletedAt = 1)))
-        assertEquals(0, engine.backup(src, includeAudio = false, nowSec = now).audioUploaded)
+        assertEquals(0, engine.backup(dev, src, includeAudio = false, nowSec = now).audioUploaded)
         assertTrue(src.opened.isEmpty())
-        assertEquals(1, engine.backup(src, includeAudio = true, nowSec = now).audioUploaded)
+        assertEquals(1, engine.backup(dev, src, includeAudio = true, nowSec = now).audioUploaded)
         assertEquals(listOf(rec(1).contentHash), src.opened)
         // A recording the user deleted from Drive is uploaded again.
         drive.filesIn(BackupFormat.KIND_RECORDING).forEach { it.trashed = true }
-        assertEquals(1, engine.backup(src, includeAudio = true, nowSec = now).audioUploaded)
+        assertEquals(1, engine.backup(dev, src, includeAudio = true, nowSec = now).audioUploaded)
     }
 
     @Test fun cloudRetentionNDaysTrashesAudioAndStripsText() = runBlocking {
         val drive = FakeDriveApi()
         val src = Source(listOf(rec(1, ageDays = 2), rec(2, ageDays = 40)))
         // Back everything up while nothing is expired...
-        DriveBackupEngine(drive, ZoneOffset.UTC, cloudDays(CloudRetention.FOREVER)).backup(src, true, now)
+        DriveBackupEngine(drive, ZoneOffset.UTC, cloudDays(CloudRetention.FOREVER)).backup(dev, src, true, now)
         assertEquals(2, drive.filesIn(BackupFormat.KIND_RECORDING).size)
         // ...then a 30-day cloud period applies.
-        val r = DriveBackupEngine(drive, ZoneOffset.UTC, cloudDays(30)).backup(src, true, now)
+        val r = DriveBackupEngine(drive, ZoneOffset.UTC, cloudDays(30)).backup(dev, src, true, now)
         assertEquals(1, r.audioTrashed)
         assertEquals(0, r.audioUploaded) // the expired one is not uploaded again
         val left = drive.filesIn(BackupFormat.KIND_RECORDING).map { it.file.appProperties[BackupFormat.HASH] }
@@ -168,7 +170,7 @@ class DriveBackupTest {
         assertNull(BackupFormat.decodeCall(old.bytes).transcriptText)
         // 0 days = this group's audio never goes to Drive.
         val drive2 = FakeDriveApi()
-        assertEquals(0, DriveBackupEngine(drive2, ZoneOffset.UTC, cloudDays(0)).backup(src, true, now).audioUploaded)
+        assertEquals(0, DriveBackupEngine(drive2, ZoneOffset.UTC, cloudDays(0)).backup(dev, src, true, now).audioUploaded)
     }
 
     @Test fun sameAsLocalFollowsActualLocalDeletion() {
@@ -195,29 +197,29 @@ class DriveBackupTest {
     @Test fun failuresAreCountedAndOthersContinue() = runBlocking {
         val drive = FakeDriveApi()
         drive.failUploadsNamed = "050123451"
-        val r = DriveBackupEngine(drive, ZoneOffset.UTC).backup(Source(listOf(rec(1), rec(2))), false, now)
+        val r = DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, Source(listOf(rec(1), rec(2))), false, now)
         assertEquals(1, r.callsUploaded)
         assertEquals(1, r.failures)
         // Next run retries only the failed one.
         drive.failUploadsNamed = null
-        assertEquals(1, DriveBackupEngine(drive, ZoneOffset.UTC).backup(Source(listOf(rec(1), rec(2))), false, now).callsUploaded)
+        assertEquals(1, DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, Source(listOf(rec(1), rec(2))), false, now).callsUploaded)
     }
 
     @Test(expected = DriveAuthRequiredException::class)
     fun authRequiredStopsTheRun(): Unit = runBlocking {
         val drive = FakeDriveApi().apply { authRequired = true }
-        DriveBackupEngine(drive).backup(Source(listOf(rec(1))), false, now)
+        DriveBackupEngine(drive).backup(dev, Source(listOf(rec(1))), false, now)
     }
 
     @Test fun timeBudgetStopsAudioAndResumes() = runBlocking {
         val drive = FakeDriveApi()
         val src = Source((1..5).map { rec(it) })
-        var calls = 0
-        val r = DriveBackupEngine(drive, ZoneOffset.UTC).backup(src, true, now) { ++calls > 2 }
+        var checks = 0 // checked once per call (5), then once per recording
+        val r = DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, src, true, now) { ++checks > 7 }
         assertTrue(r.incomplete)
         assertEquals(2, r.audioUploaded)
         assertEquals(5, r.callsUploaded)
-        val r2 = DriveBackupEngine(drive, ZoneOffset.UTC).backup(src, true, now)
+        val r2 = DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, src, true, now)
         assertFalse(r2.incomplete)
         assertEquals(3, r2.audioUploaded)
     }
@@ -239,13 +241,15 @@ class DriveBackupTest {
         val drive = FakeDriveApi()
         val custom = PolicyEntity(displayName = "Mom", numbers = "501234567", transcribe = false, summarize = false)
         val old = Source(listOf(rec(1).copy(summary = "Loan offer", verdict = "spam"), rec(2)), LabelKind.entries.map { PolicyEntity.defaultFor(it) } + custom)
-        DriveBackupEngine(drive, ZoneOffset.UTC).backup(old, true, now)
+        DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, old, true, now)
 
         // New phone: call 2 already scanned (no transcript), call 1 not on this phone.
         val db = MemStore()
         db.insert(rec(2, text = null).copy(id = 0, mediaId = 7, uri = "content://new/7"))
         val sink = Sink(db)
-        val rep = DriveBackupEngine(drive, ZoneOffset.UTC).restore(sink, nowMs = 1)
+        val backup = DriveBackupEngine(drive, ZoneOffset.UTC).backups().single()
+        assertEquals("Galaxy S20 FE", backup.name)
+        val rep = DriveBackupEngine(drive, ZoneOffset.UTC).restore(sink, backup, nowMs = 1)
         assertEquals(1, rep.inserted)
         assertEquals(1, rep.merged)
         assertTrue(rep.settings)
@@ -260,7 +264,7 @@ class DriveBackupTest {
         assertEquals(7L, r2.mediaId) // local identity kept
 
         // Audio for call 1 is offered for download.
-        val missing = DriveBackupEngine(drive, ZoneOffset.UTC).missingAudio(db.all())
+        val missing = DriveBackupEngine(drive, ZoneOffset.UTC).missingAudio(db.all(), backup)
         assertEquals(listOf(rec(1).contentHash), missing.map { it.hash })
 
         // Once the file shows up on the phone (copied over, or downloaded from Drive), a scan re-links it by hash.
@@ -280,10 +284,34 @@ class DriveBackupTest {
         assertEquals("spam", merged.verdict)
     }
 
-    @Test fun restoreWithoutBackupFails() = runBlocking {
-        val e = runCatching { DriveBackupEngine(FakeDriveApi()).restore(Sink(MemStore()), 1) }.exceptionOrNull()
-        assertNotNull(e)
-        assertTrue(e!!.message!!.contains("No CallScribe backup"))
+    @Test fun noBackupsInEmptyDrive() = runBlocking {
+        assertTrue(DriveBackupEngine(FakeDriveApi()).backups().isEmpty())
+    }
+
+    @Test fun eachPhoneHasItsOwnFolder() = runBlocking {
+        val drive = FakeDriveApi()
+        val engine = DriveBackupEngine(drive, ZoneOffset.UTC)
+        val daily = BackupDevice("device-2", "Pixel 9")
+        val a = Source(listOf(rec(1), rec(2))).apply { settings = AppSettings(runpodEndpointId = "test-phone") }
+        val b = Source(listOf(rec(2), rec(3))).apply { settings = AppSettings(runpodEndpointId = "daily-phone") }
+        engine.backup(dev, a, includeAudio = true, nowSec = now)
+        engine.backup(daily, b, includeAudio = true, nowSec = now + 10)
+        // One top folder, two phone folders, each with its own Calls + Recordings.
+        assertEquals(1, drive.live().count { it.folder && it.file.appProperties[BackupFormat.KIND] == BackupFormat.KIND_ROOT })
+        assertEquals(listOf("Galaxy S20 FE", "Pixel 9"), drive.live().filter { it.file.appProperties[BackupFormat.KIND] == BackupFormat.KIND_DEVICE }.map { it.file.name })
+        assertEquals(4, drive.filesIn(BackupFormat.KIND_CALL).size) // call 2 is in both
+        assertEquals(2, drive.filesIn(BackupFormat.KIND_SETTINGS).size) // neither overwrites the other
+        // Backing up again doesn't touch the other phone's files.
+        assertEquals(0, engine.backup(dev, a, includeAudio = true, nowSec = now + 20).callsUploaded)
+
+        val list = engine.backups()
+        assertEquals(listOf("Galaxy S20 FE", "Pixel 9"), list.map { it.name }) // most recent first
+        assertEquals(listOf(2, 2), list.map { it.calls })
+        val sink = Sink(MemStore())
+        val rep = engine.restore(sink, list.first { it.deviceId == "device-2" }, 1)
+        assertEquals(2, rep.inserted)
+        assertEquals("daily-phone", sink.settings?.runpodEndpointId)
+        assertEquals(setOf(rec(2).contentHash, rec(3).contentHash), sink.db.all().map { it.contentHash }.toSet())
     }
 
     @Test fun fileNamesAreReadable() {

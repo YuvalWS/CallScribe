@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lock
@@ -85,12 +86,13 @@ fun rememberSetupStatus(graph: AppGraph, refreshKey: Any? = null): SetupStatus? 
     val ctx = LocalContext.current
     val settings by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     val count by remember { graph.db.recordings().observeAll().map { it.size } }.collectAsStateWithLifecycle(initialValue = 0)
+    val drive by graph.drive.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     var resumes by remember { mutableIntStateOf(0) }
     LifecycleResumeEffect(Unit) {
         resumes++
         onPauseOrDispose { }
     }
-    return remember(settings, count, resumes, refreshKey) {
+    return remember(settings, count, drive, resumes, refreshKey) {
         val s = settings ?: return@remember null
         SetupStatus(
             audioGranted = granted(ctx, Manifest.permission.READ_MEDIA_AUDIO),
@@ -99,6 +101,7 @@ fun rememberSetupStatus(graph: AppGraph, refreshKey: Any? = null): SetupStatus? 
             batteryUnrestricted = ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName),
             transcriberConfigured = graph.providers.transcriber(s)?.isConfigured() == true,
             analyzerConfigured = graph.providers.analyzer(s)?.isConfigured() == true,
+            driveBackupOn = drive?.let { it.enabled && !it.needsSignIn } == true,
         )
     }
 }
@@ -211,6 +214,7 @@ private fun SetupStep.ui(): StepUi = when (this) {
         AnalyzerProviderFields(c.graph, c.settings)
     }
     SetupStep.POLICY -> StepUi(Icons.Default.Tune) { PolicyStep(it.graph, it.settings.autoEnabled) }
+    SetupStep.BACKUP -> StepUi(Icons.Default.CloudUpload) { BackupStep(it.graph) }
     SetupStep.DONE -> StepUi(Icons.Default.CheckCircle) { DoneStep(it.status) }
 }
 
@@ -341,6 +345,16 @@ private fun PolicyStep(graph: AppGraph, autoEnabled: Boolean) {
 }
 
 @Composable
+private fun BackupStep(graph: AppGraph) {
+    val st by graph.drive.settings.flow.collectAsStateWithLifecycle(initialValue = null)
+    Body(
+        "Optional: keep your transcripts, summaries and settings — and, if you like, the recordings — in your own " +
+            "Google Drive, in a folder for this phone. API keys never leave the phone. You can restore everything on a new phone."
+    )
+    st?.let { DriveBackupToggles(graph, it) }
+}
+
+@Composable
 private fun DoneStep(st: SetupStatus) {
     Body("Here's where things stand. You can change any of this in Settings, or run this setup again from there.")
     HorizontalDivider()
@@ -350,6 +364,7 @@ private fun DoneStep(st: SetupStatus) {
     StatusLine(st.batteryUnrestricted, "Runs in the background", "May be put to sleep by the battery saver")
     StatusLine(st.transcriberConfigured, "Transcription set up", "Transcription not set up")
     StatusLine(st.analyzerConfigured, "AI summary set up", "AI summary not set up (optional)")
+    StatusLine(st.driveBackupOn, "Backing up to Google Drive", "No Drive backup (optional)")
 }
 
 /** Small call-list banner shown when a required setup item is missing. */

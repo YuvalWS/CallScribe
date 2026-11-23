@@ -3,6 +3,8 @@ package app.callscribe.backup
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.provider.MediaStore
 import android.util.Log
 import androidx.room.withTransaction
@@ -39,8 +41,11 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
         private const val NOW = "drive-backup-now"
         private const val NEXT = "drive-backup-next"
         private const val RESTORE = "drive-restore"
-        /** Stay well inside WorkManager's 10-minute execution limit; the rest continues in a follow-up job. */
-        private val BUDGET_MS = TimeUnit.MINUTES.toMillis(8)
+        /**
+         * Stay inside the job time limit: 10 minutes on stock Android, but Samsung was measured stopping this job after
+         * 5 minutes. The rest continues in a follow-up job.
+         */
+        private val BUDGET_MS = TimeUnit.MINUTES.toMillis(4)
     }
 
     val settings = BackupSettingsRepository(context)
@@ -80,12 +85,32 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
         )
     }
 
-    fun restore(downloadAudio: Boolean) {
+    /** This phone: a random id (created once) and its name from Settings → About phone. */
+    suspend fun device(): BackupDevice {
+        var id = settings.get().deviceId
+        if (id.isBlank()) {
+            id = java.util.UUID.randomUUID().toString()
+            settings.update { it.copy(deviceId = id) }
+        }
+        val name = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }
+            ?: "${Build.MANUFACTURER} ${Build.MODEL}"
+        return BackupDevice(id, name)
+    }
+
+    /** Backups of all phones in the connected Google account (network). */
+    suspend fun backups(): List<BackupInfo> = engine().backups()
+
+    fun restore(from: BackupInfo, downloadAudio: Boolean) {
         wm.enqueueUniqueWork(
             RESTORE, ExistingWorkPolicy.KEEP,
             OneTimeWorkRequestBuilder<DriveBackupWorker>()
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                .setInputData(workDataOf(DriveBackupWorker.KEY_MODE to DriveBackupWorker.MODE_RESTORE, DriveBackupWorker.KEY_AUDIO to downloadAudio))
+                .setInputData(
+                    workDataOf(
+                        DriveBackupWorker.KEY_MODE to DriveBackupWorker.MODE_RESTORE, DriveBackupWorker.KEY_AUDIO to downloadAudio,
+                        DriveBackupWorker.KEY_FOLDER to from.folderId, DriveBackupWorker.KEY_NAME to from.name,
+                    )
+                )
                 .build(),
         )
     }
@@ -108,17 +133,27 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
 
     private fun engine() = DriveBackupEngine(DriveRestApi(auth::token))
 
-    suspend fun run(restore: Boolean, downloadAudio: Boolean): ListenableWorker.Result = mutex.withLock {
+    /** [restoreFrom] null = back up; otherwise restore from that phone's backup. */
+    /** True while a backup or restore runs (for the "Backing up" status). */
+    val running = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    suspend fun run(restoreFrom: BackupInfo?, downloadAudio: Boolean): ListenableWorker.Result = mutex.withLock {
+        running.value = true
+        try { runLocked(restoreFrom, downloadAudio) } finally { running.value = false }
+    }
+
+    private suspend fun runLocked(restoreFrom: BackupInfo?, downloadAudio: Boolean): ListenableWorker.Result {
+        val restore = restoreFrom != null
         val s = settings.get()
         if (!restore && !s.enabled) return ListenableWorker.Result.success()
         val start = System.currentTimeMillis()
         settings.update { it.copy(lastAttemptMs = start) }
-        try {
+        return try {
             if (restore) {
-                val msg = doRestore(downloadAudio)
+                val msg = doRestore(restoreFrom!!, downloadAudio)
                 settings.update { it.copy(lastResult = msg, needsSignIn = false) }
             } else {
-                val rep = engine().backup(source, s.includeAudio, start / 1000) { System.currentTimeMillis() - start > BUDGET_MS }
+                val rep = engine().backup(device(), source, s.includeAudio, start / 1000) { System.currentTimeMillis() - start > BUDGET_MS }
                 Log.i(TAG, rep.line())
                 settings.update {
                     it.copy(
@@ -180,20 +215,20 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
         graph.syncFiles(graph.scanner.list(graph.settings.get().pathPrefixes))
     }.onFailure { Log.w(TAG, "rescan after restore failed", it) }
 
-    private suspend fun doRestore(downloadAudio: Boolean): String {
+    private suspend fun doRestore(from: BackupInfo, downloadAudio: Boolean): String {
         val e = engine()
-        val rep = e.restore(sink, System.currentTimeMillis())
+        val rep = e.restore(sink, from, System.currentTimeMillis())
         rescan() // re-links restored rows to audio already on this phone, by content hash
         var downloaded = 0
-        var missing = e.missingAudio(graph.db.recordings().all())
+        var missing = e.missingAudio(graph.db.recordings().all(), from)
         if (downloadAudio) {
             val folder = graph.settings.get().pathPrefixes.firstOrNull() ?: "Recordings/Call"
             for (a in missing) if (runCatching { saveAudio(e, a, folder) }.onFailure { Log.w(TAG, "download ${a.name}", it) }.isSuccess) downloaded++
             if (downloaded > 0) rescan()
-            missing = e.missingAudio(graph.db.recordings().all())
+            missing = e.missingAudio(graph.db.recordings().all(), from)
         }
         return buildString {
-            append("Restored ${rep.inserted} calls, updated ${rep.merged}")
+            append("Restored from ${from.name}: ${rep.inserted} calls, updated ${rep.merged}")
             if (rep.policies > 0) append(", ${rep.policies} policies")
             if (rep.settings) append(", settings")
             if (downloaded > 0) append(" · downloaded $downloaded recordings")
@@ -227,10 +262,15 @@ class DriveBackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorke
         const val KEY_MODE = "mode"
         const val KEY_AUDIO = "download_audio"
         const val MODE_RESTORE = "restore"
+        const val KEY_FOLDER = "folder_id"
+        const val KEY_NAME = "device_name"
     }
 
     override suspend fun doWork(): Result {
         val drive = (applicationContext as CallScribeApp).graph.drive
-        return drive.run(restore = inputData.getString(KEY_MODE) == MODE_RESTORE, downloadAudio = inputData.getBoolean(KEY_AUDIO, false))
+        val from = if (inputData.getString(KEY_MODE) == MODE_RESTORE) {
+            BackupInfo(inputData.getString(KEY_FOLDER) ?: return Result.failure(), "", inputData.getString(KEY_NAME).orEmpty(), null, null, null)
+        } else null
+        return drive.run(restoreFrom = from, downloadAudio = inputData.getBoolean(KEY_AUDIO, false))
     }
 }
