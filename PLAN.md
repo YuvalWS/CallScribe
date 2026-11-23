@@ -531,7 +531,7 @@ Built and verified on a Galaxy S20 FE (Android 13, One UI 5.1) with 372 real rec
 - **Policies v3** (docs/plans/policies.md): targets contact > contact group (phone / Google Contacts, user-ordered) >
   AI tag > caller type (spam+fraud merged, Samsung "other labels" folded into unknown numbers); the most specific policy wins as a
   whole; cloud retention (forever / N days / same as phone) stored and planned for the future Drive backup; soft
-  warnings for odd combos; the call page names the policy that applied. DB v2→v3 (add-only).
+  warnings for odd combos; the call page names the policy that applied. DB v2→v3 (keeps all policies; spam+fraud rows merged keep-more).
 
 ## 4c. TODO
 - **Google Drive backup & sync** — implemented on branch `claude/drive-backup-*`, see `docs/plans/drive-backup.md`
