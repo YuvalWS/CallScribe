@@ -56,6 +56,10 @@ data class RecordingEntity(
     val analysisCostUsd: Double? = null,
     val analysisInputTokens: Long? = null,
     val analysisOutputTokens: Long? = null,
+    /** Who the caller is to the user (closed list); null = not tagged yet. Kept when text retention expires. */
+    val relationship: Relationship? = null,
+    /** True when the user picked [relationship]; re-analysis then leaves it alone. */
+    val relationshipManual: Boolean = false,
 
     val exportedAt: Long? = null,
     /** Set when the retention policy moved the audio to the trash. */

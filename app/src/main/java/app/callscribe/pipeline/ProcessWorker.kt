@@ -7,6 +7,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import app.callscribe.CallScribeApp
 import app.callscribe.data.RecordingEntity
+import app.callscribe.data.Relationship
 import app.callscribe.data.SecretStore
 import app.callscribe.data.Status
 import app.callscribe.providers.AudioInput
@@ -182,6 +183,7 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                 spamConfidence = res.analysis.spam_confidence,
                 category = res.analysis.category,
                 callerIntent = res.analysis.caller_intent,
+                relationship = if (cur.relationshipManual) cur.relationship else Relationship.fromKey(res.analysis.relationship),
                 analysisCostUsd = (cur.analysisCostUsd ?: 0.0) + (res.cost?.usd ?: 0.0),
                 analysisInputTokens = (cur.analysisInputTokens ?: 0) + res.inputTokens,
                 analysisOutputTokens = (cur.analysisOutputTokens ?: 0) + res.outputTokens,

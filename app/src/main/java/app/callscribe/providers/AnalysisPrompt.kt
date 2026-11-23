@@ -1,5 +1,6 @@
 package app.callscribe.providers
 
+import app.callscribe.data.Relationship
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -22,6 +23,20 @@ object AnalysisPrompt {
         If the call was screened, an AI assistant voice may speak on the user's behalf; focus on what the caller said.
         If the transcript is too short or unclear, use verdict "unsure". Never invent details not in the transcript.
         spam_confidence is the probability (0-1) that the call is unwanted.
+        relationship says who the caller is to the user. Pick exactly one:
+        - family_friends: relatives, partner, friends, neighbours; personal chats ("אמא", "אבא", "אחי", "סבתא",
+          "מה נשמע", "מתי באים לארוחה"), a contact saved by first name or nickname talking about personal matters.
+        - work: the user's own job: colleagues, manager, employees, the employer's clients, shifts, meetings,
+          projects, recruiters about the user's job ("הבוס", "הישיבה", "המשמרת", "הפרויקט", "הלקוח שלנו").
+        - business: a business the user personally buys from or hired: suppliers, contractors, tradespeople,
+          shops, garage, landlord, lawyer / accountant, price quotes and orders ("הצעת מחיר", "ההזמנה שלך",
+          "האינסטלטור", "החשמלאי", "המוסך").
+        - services: institutions and public services: banks, credit cards, insurance, health funds, clinics and
+          hospitals, government, municipality, ביטוח לאומי, utilities, couriers and deliveries, appointment
+          reminders ("קופת חולים", "הבנק", "שליח", "העירייה", "תור לרופא").
+        - other: anything else: strangers, wrong numbers, spam, telemarketing, scams, surveys, or too unclear.
+        Spam and telemarketing are always "other" (the verdict covers spam). The caller name is a hint
+        (e.g. "אמא", "Bank", "Dr."). If unsure between tags, prefer "other".
         Reply with JSON only, matching the given schema.
     """.trimIndent()
 
@@ -57,6 +72,11 @@ object AnalysisPrompt {
         ),
         "caller_intent" to str("One short Hebrew line: what the caller wants"),
         "action_items" to mapOf("type" to "array", "items" to mapOf("type" to "string")),
+        "relationship" to mapOf(
+            "type" to "string",
+            "enum" to Relationship.entries.map { it.key },
+            "description" to "Who the caller is to the user",
+        ),
     )
 
     /** Full JSON schema as a plain map (for SDKs that take maps). */
@@ -86,6 +106,12 @@ object AnalysisPrompt {
     fun parse(text: String): Analysis {
         val t = text.trim().removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
         return runCatching { json.decodeFromString(Analysis.serializer(), t) }
+            .map { it.copy(relationship = Relationship.fromKey(it.relationship).key) }
             .getOrElse { throw ProviderError("Could not parse the model's JSON: ${text.take(200)}", false) }
     }
+
+    /** The tag the AI gave, from a stored analysis JSON; null if absent (not analysed / analysed before tags). */
+    fun relationshipFrom(analysisJson: String?): Relationship? =
+        analysisJson?.takeIf { "\"relationship\"" in it }
+            ?.let { runCatching { Relationship.fromKey(parse(it).relationship) }.getOrNull() }
 }

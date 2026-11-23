@@ -58,6 +58,8 @@ data class Analysis(
     val category: String,
     val caller_intent: String,
     val action_items: List<String> = emptyList(),
+    /** One of [app.callscribe.data.Relationship] keys; map with Relationship.fromKey (unknown → other). */
+    val relationship: String = "other",
 )
 
 data class AnalysisResult(val analysis: Analysis, val rawJson: String, val cost: Cost?, val inputTokens: Long, val outputTokens: Long)

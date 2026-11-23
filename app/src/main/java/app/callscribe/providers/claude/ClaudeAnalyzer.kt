@@ -83,7 +83,7 @@ class ClaudeAnalyzer(
 
         val stop = msg.stopReason().orElse(null)
         if (stop == StopReason.REFUSAL) {
-            val a = Analysis("המודל סירב לנתח את השיחה.", "unsure", 0.5, "other", "", emptyList())
+            val a = Analysis("המודל סירב לנתח את השיחה.", "unsure", 0.5, "other", "", emptyList(), "other")
             return@withContext AnalysisResult(a, "{\"refusal\":true}", cost, inTok, outTok)
         }
         if (stop == StopReason.MAX_TOKENS) throw ProviderError("Anthropic: response cut off (max_tokens)", true)

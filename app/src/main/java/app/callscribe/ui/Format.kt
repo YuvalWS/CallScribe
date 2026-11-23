@@ -7,6 +7,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 import app.callscribe.data.LabelKind
 import app.callscribe.data.RecordingEntity
+import app.callscribe.data.Relationship
 import app.callscribe.data.Status
 import java.time.Instant
 import java.time.ZoneId
@@ -69,4 +70,12 @@ fun labelColor(k: LabelKind): Color? = when (k) {
     LabelKind.SPAM, LabelKind.FRAUD -> Color(0xFFFFCDD2)
     LabelKind.OTHER_LABEL -> Color(0xFFFFE0B2)
     else -> null
+}
+
+fun relationshipColor(t: Relationship): Color? = when (t) {
+    Relationship.FAMILY_FRIENDS -> Color(0xFFE1BEE7)
+    Relationship.WORK -> Color(0xFFBBDEFB)
+    Relationship.BUSINESS -> Color(0xFFB2DFDB)
+    Relationship.SERVICES -> Color(0xFFD7CCC8)
+    Relationship.OTHER -> null
 }

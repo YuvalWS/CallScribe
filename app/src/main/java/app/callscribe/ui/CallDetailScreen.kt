@@ -24,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -55,9 +56,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
 import app.callscribe.data.PolicyEntity
 import app.callscribe.data.RecordingEntity
+import app.callscribe.data.Relationship
 import app.callscribe.data.Status
 import app.callscribe.detect.WorkScheduler
 import app.callscribe.pipeline.ProcessWorker
+import app.callscribe.providers.AnalysisPrompt
 import app.callscribe.providers.Segment
 import app.callscribe.rules.PhoneNumbers
 import app.callscribe.rules.PolicyResolver
@@ -141,6 +144,7 @@ fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () 
             }
 
             if (rec.verdict != null) AnalysisCard(rec)
+            TagPicker(graph, rec)
             if (rec.transcriptText != null) TranscriptCard(rec)
             CostCard(rec)
             CallerRules(graph, rec, onPolicies)
@@ -155,11 +159,40 @@ private fun AnalysisCard(r: RecordingEntity) {
             Column(Modifier.padding(12.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 val pct = ((r.spamConfidence ?: 0.0) * 100).toInt()
                 val v = when (r.verdict) { "spam" -> "ספאם"; "not_spam" -> "לא ספאם"; else -> "לא ברור" }
-                Text("$v · $pct% · ${r.category}", fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.Black)
+                val tag = r.relationship?.let { " · ${it.he}" }.orEmpty()
+                Text("$v · $pct% · ${r.category}$tag", fontWeight = FontWeight.Bold, color = androidx.compose.ui.graphics.Color.Black)
                 r.callerIntent?.let { Text(it, color = androidx.compose.ui.graphics.Color.Black) }
                 r.summary?.let { Text(it, color = androidx.compose.ui.graphics.Color.Black) }
             }
         }
+    }
+}
+
+/** Tag chips; picking one is a manual override that re-analysis keeps. "Use AI tag" restores the analysed tag. */
+@Composable
+private fun TagPicker(graph: AppGraph, r: RecordingEntity) {
+    val scope = rememberCoroutineScope()
+    val dao = graph.db.recordings()
+    Column {
+        val note = when {
+            r.relationship == null -> "not tagged yet"
+            r.relationshipManual -> "set by you"
+            else -> "set by AI"
+        }
+        Text("Tag · $note", fontWeight = FontWeight.Bold)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Relationship.entries.forEach { t ->
+                FilterChip(
+                    selected = r.relationship == t,
+                    onClick = { scope.launch { dao.setRelationship(r.id, t.name, manual = true) } },
+                    label = { Text(t.en) },
+                )
+            }
+        }
+        if (r.relationshipManual) TextButton(onClick = {
+            val ai = AnalysisPrompt.relationshipFrom(r.analysisJson)
+            scope.launch { dao.setRelationship(r.id, ai?.name, manual = false) }
+        }) { Text(if (r.analysisJson != null) "Use AI tag" else "Clear (let AI tag it)") }
     }
 }
 

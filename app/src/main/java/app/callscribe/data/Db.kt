@@ -45,6 +45,10 @@ interface RecordingDao {
     @Query("UPDATE recordings SET keepForever = :keep WHERE id = :id")
     suspend fun setKeepForever(id: Long, keep: Boolean)
 
+    /** Sets the relationship tag ([tag] = [Relationship.name] or null). [manual] = picked by the user. */
+    @Query("UPDATE recordings SET relationship = :tag, relationshipManual = :manual, updatedAt = :now WHERE id = :id")
+    suspend fun setRelationship(id: Long, tag: String?, manual: Boolean, now: Long = System.currentTimeMillis())
+
     @Query("DELETE FROM recordings WHERE fileMissing = 1")
     suspend fun deleteMissing(): Int
 }
@@ -74,7 +78,7 @@ interface PolicyDao {
     }
 }
 
-@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 3, exportSchema = true)
+@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 4, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun recordings(): RecordingDao
     abstract fun policies(): PolicyDao
@@ -106,9 +110,18 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v3 → v4: AI relationship tag + manual-override flag. */
+        val MIGRATION_3_4_SQL = listOf(
+            "ALTER TABLE recordings ADD COLUMN relationship TEXT",
+            "ALTER TABLE recordings ADD COLUMN relationshipManual INTEGER NOT NULL DEFAULT 0",
+        )
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) = MIGRATION_3_4_SQL.forEach(db::execSQL)
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "callscribe.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

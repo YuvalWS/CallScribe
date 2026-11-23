@@ -49,6 +49,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
 import app.callscribe.data.LabelKind
 import app.callscribe.data.RecordingEntity
+import app.callscribe.data.Relationship
 import app.callscribe.data.Status
 import app.callscribe.detect.WorkScheduler
 import kotlinx.coroutines.launch
@@ -61,7 +62,7 @@ private enum class Filter(val title: String, val test: (RecordingEntity) -> Bool
     TODO("Not transcribed", { it.transcriptText == null }),
 }
 
-/** Matches name, number (any format) and transcript / summary text. Pure — unit-tested. */
+/** Matches name, number (any format), transcript / summary text and tag names. Pure — unit-tested. */
 object CallSearch {
     fun matches(r: RecordingEntity, query: String): Boolean {
         val q = query.trim()
@@ -69,6 +70,7 @@ object CallSearch {
         val lower = q.lowercase()
         val fields = listOfNotNull(r.counterparty, r.samsungLabel, r.displayName, r.transcriptText, r.summary, r.callerIntent)
         if (fields.any { it.lowercase().contains(lower) }) return true
+        if (r.relationship != null && r.relationship in Relationship.matching(lower)) return true
         val digits = q.filter { it.isDigit() }
         if (digits.length >= 3 && q.all { it.isDigit() || it in "+-() " }) {
             val mine = r.counterparty?.filter { it.isDigit() } ?: return false
@@ -90,6 +92,7 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
     var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
     var query by rememberSaveable { mutableStateOf("") }
     var dateSel by rememberSaveable { mutableStateOf("") }
+    var tag by rememberSaveable { mutableStateOf<Relationship?>(null) }
 
     Scaffold(topBar = {
         TopAppBar(
@@ -112,8 +115,11 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             )
             val dateRange = remember(dateSel) { DateSelection.resolve(dateSel, java.time.LocalDate.now()) }
-            val shown = remember(all, filter, query, dateRange) {
-                all.filter { filter.test(it) && CallSearch.matches(it, query) && (dateRange?.contains(it.callTimeSec) ?: true) }
+            val shown = remember(all, filter, query, dateRange, tag) {
+                all.filter {
+                    filter.test(it) && (tag == null || it.relationship == tag) &&
+                        CallSearch.matches(it, query) && (dateRange?.contains(it.callTimeSec) ?: true)
+                }
             }
             Text(
                 (if (shown.size != all.size) "showing ${shown.size} of ${all.size}" else "${all.size} recordings") +
@@ -130,13 +136,14 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                 }
                 DateFilterChip(dateSel) { dateSel = it }
             }
+            TagFilterRow(tag) { tag = it }
             if (rows == null) return@Column
             if (shown.isEmpty()) {
                 Text(
                     when {
                         all.isEmpty() -> "No call recordings found yet. Turn on call recording in the Phone app, then tap Rescan."
-                        query.isNotBlank() && dateRange == null -> "No calls match \"$query\"."
-                        dateRange != null -> "No calls match the current search and filters."
+                        query.isNotBlank() && dateRange == null && tag == null -> "No calls match \"$query\"."
+                        dateRange != null || tag != null -> "No calls match the current search and filters."
                         else -> "Nothing here."
                     },
                     modifier = Modifier.padding(24.dp),
@@ -182,6 +189,7 @@ private fun CallRow(r: RecordingEntity, onClick: () -> Unit, onToggleKeep: () ->
                     )
                     else -> SmallChip(Fmt.status(r.status))
                 }
+                r.relationship?.let { SmallChip(it.en, relationshipColor(it)) }
                 if (r.totalCostUsd > 0) Text(Fmt.usd(r.totalCostUsd), style = MaterialTheme.typography.bodySmall)
                 if (r.fileMissing) Text("audio deleted", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
@@ -198,6 +206,23 @@ private fun CallRow(r: RecordingEntity, onClick: () -> Unit, onToggleKeep: () ->
                 IconButton(onClick = onProcess, modifier = Modifier.semantics { contentDescription = "Transcribe ${Fmt.title(r)}" }) {
                     Icon(Icons.Default.Subtitles, null)
                 }
+        }
+    }
+}
+
+/** Tag filter chips (tap again to clear). Separate row so it combines with the main filter. */
+@Composable
+private fun TagFilterRow(selected: Relationship?, onSelect: (Relationship?) -> Unit) {
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Relationship.entries.forEach { t ->
+            FilterChip(
+                selected = selected == t,
+                onClick = { onSelect(if (selected == t) null else t) },
+                label = { Text(t.en) },
+            )
         }
     }
 }

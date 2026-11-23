@@ -14,6 +14,9 @@ you configure it.
 - Call list of every recording in `Recordings/Call`, with Samsung's caller-ID label (Suspected Spam,
   Potential Fraud, …), filters, and per-call + total cost.
 - **Search** by name, number (any format) or words in transcripts and summaries.
+- **Tags** from a short closed list — Family & friends, Work, Business & suppliers, Services & official, Other —
+  set by the AI and correctable on the call page (your choice is never overwritten). Filter and search by tag
+  (English or Hebrew, e.g. "משפחה").
 - **Transcribe** button on every row and on the call page; **Analyze** for the AI summary.
 - **Policies** per caller type (spam, fraud, other labels, unknown, private, contacts) and per contact:
   transcribe automatically? summarize? how long to keep the recording? A contact's policy overrides its group.
