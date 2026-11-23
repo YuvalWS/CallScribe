@@ -19,6 +19,7 @@ import java.io.File
  * Debug builds only. Lets a developer exercise parts of the pipeline over adb:
  *   adb shell am broadcast -n app.callscribe/.debug.DebugReceiver -a app.callscribe.DEBUG_COMPRESS --el id 12
  *   adb shell am broadcast -n app.callscribe/.debug.DebugReceiver -a app.callscribe.DEBUG_DUMP
+ *   adb shell am broadcast -n app.callscribe/.debug.DebugReceiver -a app.callscribe.DEBUG_ONBOARDING   (show first-run setup again, keeps data)
  * Work runs in WorkManager (like the real pipeline) so Samsung's background freezer doesn't stall it.
  */
 class DebugReceiver : BroadcastReceiver() {
@@ -82,6 +83,10 @@ class DebugWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
                 "app.callscribe.DEBUG_SHOW" -> {
                     val r = graph.db.recordings().get(inputData.getLong("id", -1))
                     Log.i(TAG, "row ${r?.id}: status=${r?.status} error=${r?.error} segs=${r?.transcriptJson?.length} text=${r?.transcriptText?.take(40)} cost=${r?.transcriptionCostUsd} gpuMs=${r?.transcriptionGpuMs} job=${r?.providerJobId}")
+                }
+                "app.callscribe.DEBUG_ONBOARDING" -> {
+                    graph.settings.update { it.copy(onboardingDone = false, setupBannerDismissed = false) }
+                    Log.i(TAG, "onboarding reset")
                 }
                 "app.callscribe.DEBUG_DUMP" -> {
                     val all = graph.db.recordings().all()

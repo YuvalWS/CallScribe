@@ -33,8 +33,6 @@ import kotlinx.coroutines.launch
 @Composable
 fun ProvidersScreen(graph: AppGraph, onBack: () -> Unit) {
     val s by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
-    val scope = rememberCoroutineScope()
-    fun upd(t: (AppSettings) -> AppSettings) = scope.launch { graph.settings.update(t) }
 
     Page("Providers", onBack) {
         val st = s ?: return@Page
@@ -45,46 +43,61 @@ fun ProvidersScreen(graph: AppGraph, onBack: () -> Unit) {
         )
 
         Section("Transcription — ivrit.ai on RunPod")
-        Text(
-            "Endpoint ID: the short ID of your RunPod serverless endpoint (Serverless → your endpoint; also in its URL " +
-                "api.runpod.ai/v2/<ID>/run). Deploy the ivrit-ai/runpod-serverless template with min workers 0.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        var endpoint by remember { mutableStateOf(st.runpodEndpointId) }
-        var model by remember { mutableStateOf(st.runpodModel) }
-        var price by remember { mutableStateOf(st.runpodPricePerSec.toBigDecimal().toPlainString()) }
-        Field("Endpoint ID", endpoint) { endpoint = it.trim() }
-        KeyField(graph, SecretStore.Key.RUNPOD_API_KEY, "RunPod API key")
-        Field("Model", model) { model = it.trim() }
-        Field("GPU price, USD per second (for cost estimates)", price, KeyboardType.Decimal) { price = it }
-        SwitchRow("Separate speakers (diarization, slower)", st.diarize) { v -> upd { it.copy(diarize = v) } }
-        SaveAndTest(
-            onSave = {
-                graph.settings.update {
-                    it.copy(runpodEndpointId = endpoint, runpodModel = model, runpodPricePerSec = price.toDoubleOrNull() ?: it.runpodPricePerSec)
-                }
-            },
-            onTest = { graph.providers.transcriber(graph.settings.get())!!.test() },
-        )
+        TranscriptionProviderFields(graph, st)
         HorizontalDivider()
 
         Section("AI summary & spam verdict")
-        val options = listOf(
-            "gemini" to "Google Gemini — free tier available (rate limited)",
-            "openrouter" to "OpenRouter — any model, pay per request",
-            "claude" to "Claude (Anthropic API)",
-        )
-        options.forEach { (id, label) ->
-            Row(Modifier.fillMaxWidth().clickable { upd { it.copy(analyzerId = id) } }, verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(st.analyzerId == id, { upd { it.copy(analyzerId = id) } })
-                Text(label)
+        AnalyzerProviderFields(graph, st)
+    }
+}
+
+/** RunPod endpoint fields + Save / Test connection. Shared by the Providers screen and onboarding. */
+@Composable
+internal fun TranscriptionProviderFields(graph: AppGraph, st: AppSettings) {
+    val scope = rememberCoroutineScope()
+    Text(
+        "Endpoint ID: the short ID of your RunPod serverless endpoint (Serverless → your endpoint; also in its URL " +
+            "api.runpod.ai/v2/<ID>/run). Deploy the ivrit-ai/runpod-serverless template with min workers 0.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    var endpoint by remember { mutableStateOf(st.runpodEndpointId) }
+    var model by remember { mutableStateOf(st.runpodModel) }
+    var price by remember { mutableStateOf(st.runpodPricePerSec.toBigDecimal().toPlainString()) }
+    Field("Endpoint ID", endpoint) { endpoint = it.trim() }
+    KeyField(graph, SecretStore.Key.RUNPOD_API_KEY, "RunPod API key")
+    Field("Model", model) { model = it.trim() }
+    Field("GPU price, USD per second (for cost estimates)", price, KeyboardType.Decimal) { price = it }
+    SwitchRow("Separate speakers (diarization, slower)", st.diarize) { v -> scope.launch { graph.settings.update { it.copy(diarize = v) } } }
+    SaveAndTest(
+        onSave = {
+            graph.settings.update {
+                it.copy(runpodEndpointId = endpoint, runpodModel = model, runpodPricePerSec = price.toDoubleOrNull() ?: it.runpodPricePerSec)
             }
+        },
+        onTest = { graph.providers.transcriber(graph.settings.get())!!.test() },
+    )
+}
+
+/** AI provider choice (Gemini / OpenRouter / Claude) + the chosen provider's fields. Shared with onboarding. */
+@Composable
+internal fun AnalyzerProviderFields(graph: AppGraph, st: AppSettings) {
+    val scope = rememberCoroutineScope()
+    fun choose(id: String) = scope.launch { graph.settings.update { it.copy(analyzerId = id) } }
+    val options = listOf(
+        "gemini" to "Google Gemini — free tier available (rate limited)",
+        "openrouter" to "OpenRouter — any model, pay per request",
+        "claude" to "Claude (Anthropic API)",
+    )
+    options.forEach { (id, label) ->
+        Row(Modifier.fillMaxWidth().clickable { choose(id) }, verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(st.analyzerId == id, { choose(id) })
+            Text(label)
         }
-        when (st.analyzerId) {
-            "gemini" -> GeminiSection(graph, st)
-            "openrouter" -> OpenRouterSection(graph, st)
-            "claude" -> ClaudeSection(graph, st)
-        }
+    }
+    when (st.analyzerId) {
+        "gemini" -> GeminiSection(graph, st)
+        "openrouter" -> OpenRouterSection(graph, st)
+        "claude" -> ClaudeSection(graph, st)
     }
 }
 

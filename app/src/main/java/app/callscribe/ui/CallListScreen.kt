@@ -84,7 +84,7 @@ object CallSearch {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Unit, onSetup: () -> Unit) {
+fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Unit, onSetup: () -> Unit, onFinishSetup: (SetupStep) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val rows by graph.db.recordings().observeAll().collectAsStateWithLifecycle(initialValue = null)
@@ -93,6 +93,7 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
     var query by rememberSaveable { mutableStateOf("") }
     var dateSel by rememberSaveable { mutableStateOf("") }
     var tag by rememberSaveable { mutableStateOf<Relationship?>(null) }
+    val setup = rememberSetupStatus(graph)
 
     Scaffold(topBar = {
         TopAppBar(
@@ -127,6 +128,15 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+            val st = settings
+            val missing = setup?.missingRequired().orEmpty()
+            if (st != null && st.onboardingDone && !st.setupBannerDismissed && missing.isNotEmpty()) {
+                SetupBanner(
+                    missing,
+                    onFinish = { setup?.firstIncompleteRequired()?.let(onFinishSetup) },
+                    onDismiss = { scope.launch { graph.settings.update { it.copy(setupBannerDismissed = true) } } },
+                )
+            }
             Row(
                 Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),

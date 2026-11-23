@@ -1,22 +1,13 @@
 package app.callscribe.ui
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -28,7 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -51,7 +42,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
-                    PermissionGate {
+                    SetupGate(graph) {
                         AppNav(graph, openId, openRetention) { openId = -1; openRetention = false }
                     }
                 }
@@ -75,7 +66,10 @@ private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: 
     }
     NavHost(nav, startDestination = "list") {
         composable("list") {
-            CallListScreen(graph, onOpen = { nav.navigate("detail/$it") }, onSettings = { nav.navigate("settings") }, onSetup = { nav.navigate("providers") })
+            CallListScreen(
+                graph, onOpen = { nav.navigate("detail/$it") }, onSettings = { nav.navigate("settings") },
+                onSetup = { nav.navigate("providers") }, onFinishSetup = { step -> nav.navigate("setup?start=${step.name}") },
+            )
         }
         composable("detail/{id}", arguments = listOf(navArgument("id") { type = NavType.LongType })) { e ->
             CallDetailScreen(
@@ -87,7 +81,12 @@ private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: 
             SettingsScreen(
                 graph, onBack = { nav.popBackStack() }, onProviders = { nav.navigate("providers") },
                 onRules = { nav.navigate("policies") }, onRetention = { nav.navigate("retention") },
+                onRunSetup = { nav.navigate("setup?start=${SetupStep.WELCOME.name}") },
             )
+        }
+        composable("setup?start={start}", arguments = listOf(navArgument("start") { type = NavType.StringType; defaultValue = SetupStep.WELCOME.name })) { e ->
+            val start = SetupStep.valueOf(e.arguments?.getString("start") ?: SetupStep.WELCOME.name)
+            OnboardingScreen(graph, start, onExit = { nav.popBackStack() }, onFinish = { nav.popBackStack() })
         }
         composable("providers") { ProvidersScreen(graph, onBack = { nav.popBackStack() }) }
         composable("policies") { PoliciesScreen(graph, onBack = { nav.popBackStack() }, onRetention = { nav.navigate("retention") }) }
@@ -95,26 +94,23 @@ private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: 
     }
 }
 
+/**
+ * First run (or audio access lost) → onboarding; otherwise the app. Replaces the old bare permission gate.
+ * See docs/plans/onboarding.md.
+ */
 @Composable
-private fun PermissionGate(content: @Composable () -> Unit) {
+private fun SetupGate(graph: app.callscribe.AppGraph, content: @Composable () -> Unit) {
     val ctx = LocalContext.current
-    fun granted() = ctx.checkSelfPermission(Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED
-    var ok by remember { mutableStateOf(granted()) }
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        ok = granted()
-        if (ok) WorkScheduler.scanNow(ctx)
-    }
-    LaunchedEffect(Unit) {
-        if (!ok) launcher.launch(arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.POST_NOTIFICATIONS))
-        else WorkScheduler.scanNow(ctx)
-    }
-    if (ok) content() else {
-        Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            Text("CallScribe needs access to audio files", style = MaterialTheme.typography.headlineSmall)
-            Text("It reads the call recordings your phone saves in Recordings/Call. Nothing is uploaded until you set up a transcription service.")
-            Button(onClick = { launcher.launch(arrayOf(Manifest.permission.READ_MEDIA_AUDIO, Manifest.permission.POST_NOTIFICATIONS)) }) {
-                Text("Grant access")
-            }
-        }
-    }
+    val settings by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
+    val status = rememberSetupStatus(graph)
+    val audio = status?.audioGranted == true
+    LaunchedEffect(audio) { if (audio) WorkScheduler.scanNow(ctx) }
+    val s = settings ?: return
+    if (status == null) return
+    if (!s.onboardingDone || !audio) {
+        OnboardingScreen(
+            graph, start = if (s.onboardingDone) SetupStep.PERMISSIONS else SetupStep.WELCOME,
+            onExit = null, onFinish = {},
+        )
+    } else content()
 }

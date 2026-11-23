@@ -48,6 +48,10 @@ data class AppSettings(
     val openrouterModel: String = "anthropic/claude-haiku-5.5",
     /** Master switch for automatic processing of new calls (per-group policies decide the rest). */
     val autoEnabled: Boolean = true,
+    /** First-run setup finished (or skipped). See docs/plans/onboarding.md. */
+    val onboardingDone: Boolean = false,
+    /** The user closed the "setup incomplete" banner on the call list. */
+    val setupBannerDismissed: Boolean = false,
 )
 
 class SettingsRepository(private val context: Context) {
@@ -78,6 +82,8 @@ class SettingsRepository(private val context: Context) {
         val gemOut = doublePreferencesKey("gemini_price_out")
         val orModel = stringPreferencesKey("openrouter_model")
         val autoEnabled = booleanPreferencesKey("auto_enabled")
+        val onboardingDone = booleanPreferencesKey("onboarding_done")
+        val bannerDismissed = booleanPreferencesKey("setup_banner_dismissed")
     }
 
     val flow: Flow<AppSettings> = context.dataStore.data.map { p -> p.toSettings() }
@@ -105,6 +111,9 @@ class SettingsRepository(private val context: Context) {
             geminiPriceOut = this[K.gemOut] ?: d.geminiPriceOut,
             openrouterModel = this[K.orModel] ?: d.openrouterModel,
             autoEnabled = this[K.autoEnabled] ?: d.autoEnabled,
+            // Installs from before onboarding existed already have saved settings: don't force them through it.
+            onboardingDone = this[K.onboardingDone] ?: (this[K.transcriber] != null),
+            setupBannerDismissed = this[K.bannerDismissed] ?: d.setupBannerDismissed,
         )
     }
 
@@ -129,6 +138,8 @@ class SettingsRepository(private val context: Context) {
             p[K.gemOut] = s.geminiPriceOut
             p[K.orModel] = s.openrouterModel
             p[K.autoEnabled] = s.autoEnabled
+            p[K.onboardingDone] = s.onboardingDone
+            p[K.bannerDismissed] = s.setupBannerDismissed
         }
     }
 }
