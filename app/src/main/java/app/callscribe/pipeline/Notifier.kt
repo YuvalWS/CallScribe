@@ -19,6 +19,7 @@ class Notifier(private val context: Context) {
         const val CHANNEL = "calls"
         const val EXTRA_RECORDING_ID = "recording_id"
         const val EXTRA_OPEN_RETENTION = "open_retention"
+        const val EXTRA_OPEN_BACKUP = "open_backup"
     }
 
     fun createChannel() {
@@ -40,6 +41,22 @@ class Notifier(private val context: Context) {
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(-2, n)
+    }
+
+    fun notifyBackupSignIn() {
+        if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val intent = Intent(context, MainActivity::class.java)
+            .putExtra(EXTRA_OPEN_BACKUP, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val pi = PendingIntent.getActivity(context, -3, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setContentTitle("Google Drive backup paused")
+            .setContentText("Google needs you to sign in again. Tap to reconnect.")
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify(-3, n)
     }
 
     fun notifyResult(r: RecordingEntity) {

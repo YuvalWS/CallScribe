@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Provider API keys never leave the device: exclude the encrypted secrets file from cloud backup and device transfer. -->
+<!-- Provider API keys never leave the device: exclude the encrypted secrets file from cloud backup and device transfer.
+     The Drive backup state is per phone (a new phone must connect its Google account itself). -->
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="sharedpref" path="secrets.xml" />
+        <exclude domain="file" path="datastore/drive_backup.preferences_pb" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="secrets.xml" />
+        <exclude domain="file" path="datastore/drive_backup.preferences_pb" />
     </device-transfer>
 </data-extraction-rules>

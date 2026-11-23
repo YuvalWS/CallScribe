@@ -98,6 +98,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.5.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.13.0")
     implementation("com.anthropic:anthropic-java:3.8.0")
+    // Google sign-in for the optional Drive backup (AuthorizationClient only; Drive is called over plain REST).
+    implementation("com.google.android.gms:play-services-auth:22.0.0")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

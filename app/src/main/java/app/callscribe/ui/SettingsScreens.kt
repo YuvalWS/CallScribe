@@ -77,7 +77,10 @@ internal fun Page(title: String, onBack: () -> Unit, content: @Composable () -> 
 internal fun Section(title: String) = Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 
 @Composable
-fun SettingsScreen(graph: AppGraph, onBack: () -> Unit, onProviders: () -> Unit, onRules: () -> Unit, onRetention: () -> Unit, onRunSetup: () -> Unit) {
+fun SettingsScreen(
+    graph: AppGraph, onBack: () -> Unit, onProviders: () -> Unit, onRules: () -> Unit, onRetention: () -> Unit,
+    onRunSetup: () -> Unit, onBackup: () -> Unit,
+) {
     val s by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
@@ -86,6 +89,7 @@ fun SettingsScreen(graph: AppGraph, onBack: () -> Unit, onProviders: () -> Unit,
         NavRow("Transcription & AI providers", "Your RunPod endpoint and your AI provider (Gemini, OpenRouter, Claude)", onProviders)
         NavRow("Processing & retention policies", "Per caller type or contact: transcribe, summarize, how long to keep", onRules)
         NavRow("Retention review", "Recordings past their retention period", onRetention)
+        NavRow("Google Drive backup", "Transcripts, policies and optionally recordings in your own Drive", onBackup)
         NavRow("Run setup again", "Permissions, call recording, background, providers and starting policy", onRunSetup)
         HorizontalDivider()
 

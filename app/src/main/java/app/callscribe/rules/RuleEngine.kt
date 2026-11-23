@@ -76,21 +76,25 @@ object PolicyResolver {
     fun forProcessing(r: RecordingEntity, policies: List<PolicyEntity>) = resolve(r, policies, tag = null)
 }
 
-/** Effective cloud retention in days (-1 = forever) for the audio and text copies of a call. */
+/** Cloud (Drive backup) retention. "Same as local" = the cloud copy goes once the phone copy has actually been deleted. */
 object CloudRetention {
-    fun audioDays(p: PolicyEntity) = if (p.cloudRetentionDays == PolicyEntity.SAME_AS_LOCAL) p.audioRetentionDays else p.cloudRetentionDays
-    fun textDays(p: PolicyEntity) = if (p.cloudRetentionDays == PolicyEntity.SAME_AS_LOCAL) p.textRetentionDays else p.cloudRetentionDays
+    const val FOREVER = PolicyEntity.FOREVER
+    const val SAME_AS_LOCAL = PolicyEntity.SAME_AS_LOCAL
+    /** Approximate cloud period in days (for editor warnings): "same as local" uses the local period. */
+    fun audioDays(p: PolicyEntity) = if (p.cloudRetentionDays == SAME_AS_LOCAL) p.audioRetentionDays else p.cloudRetentionDays
+    fun textDays(p: PolicyEntity) = if (p.cloudRetentionDays == SAME_AS_LOCAL) p.textRetentionDays else p.cloudRetentionDays
 }
 
 data class RetentionPlan(
     val trashAudio: List<RecordingEntity>,
     val deleteText: List<RecordingEntity>,
-    /** Drive backup copies past their cloud period. Consumed by the future Drive backup (PLAN §4c). */
+    /** Drive backup audio past its cloud period: trash it on Drive and never upload it again. */
     val cloudAudio: List<RecordingEntity> = emptyList(),
+    /** Drive backup text past its cloud period: the backed-up call keeps its metadata only. */
     val cloudText: List<RecordingEntity> = emptyList(),
 ) {
     val audioBytes get() = trashAudio.sumOf { it.sizeBytes }
-    /** Local work only: cloud lists are acted on by the backup feature. */
+    /** Local work only: the cloud lists are acted on by the Drive backup. */
     val isEmpty get() = trashAudio.isEmpty() && deleteText.isEmpty()
 }
 
@@ -106,6 +110,7 @@ object Retention {
         nowSec: Long,
         keptForever: (RecordingEntity) -> Boolean = { it.keptForever() },
         tagOf: (RecordingEntity) -> String? = { it.aiTag() },
+        cloudDays: (PolicyEntity) -> Int = { it.cloudRetentionDays },
     ): RetentionPlan {
         val audio = mutableListOf<RecordingEntity>()
         val text = mutableListOf<RecordingEntity>()
@@ -118,8 +123,14 @@ object Retention {
             if (due(p.audioRetentionDays, age) && !r.fileMissing && r.audioDeletedAt == null) audio += r
             val hasText = r.transcriptText != null || r.summary != null
             if (due(p.textRetentionDays, age) && hasText) text += r
-            if (due(CloudRetention.audioDays(p), age)) cloudAudio += r
-            if (due(CloudRetention.textDays(p), age)) cloudText += r
+            when (val c = cloudDays(p)) {
+                // "Same as local": the cloud copy goes once the phone copy has actually been deleted by retention.
+                CloudRetention.SAME_AS_LOCAL -> {
+                    if (r.audioDeletedAt != null) cloudAudio += r
+                    if (r.textDeletedAt != null) cloudText += r
+                }
+                else -> if (due(c, age)) { cloudAudio += r; cloudText += r }
+            }
         }
         return RetentionPlan(audio, text, cloudAudio, cloudText)
     }

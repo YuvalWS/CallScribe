@@ -1,0 +1,236 @@
+package app.callscribe.backup
+
+import android.content.ContentValues
+import android.content.Context
+import android.net.Uri
+import android.provider.MediaStore
+import android.util.Log
+import androidx.room.withTransaction
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.ListenableWorker
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import androidx.work.workDataOf
+import app.callscribe.AppGraph
+import app.callscribe.CallScribeApp
+import app.callscribe.data.AppSettings
+import app.callscribe.data.PolicyEntity
+import app.callscribe.data.RecordingEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import java.io.IOException
+import java.time.Duration
+import java.util.concurrent.TimeUnit
+
+/** Android glue for the Drive backup: scheduling, the DB as source/sink, and audio file access. */
+class DriveBackup(private val context: Context, private val graph: AppGraph) {
+    companion object {
+        private const val TAG = "DriveBackup"
+        private const val PERIODIC = "drive-backup"
+        private const val NOW = "drive-backup-now"
+        private const val NEXT = "drive-backup-next"
+        private const val RESTORE = "drive-restore"
+        /** Stay well inside WorkManager's 10-minute execution limit; the rest continues in a follow-up job. */
+        private val BUDGET_MS = TimeUnit.MINUTES.toMillis(8)
+    }
+
+    val settings = BackupSettingsRepository(context)
+    val auth by lazy { DriveAuth(context) }
+    private val mutex = Mutex()
+    private val wm get() = WorkManager.getInstance(context)
+
+    // ---- scheduling ----
+
+    private fun constraints(s: DriveBackupSettings) = Constraints.Builder()
+        .setRequiredNetworkType(if (s.wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+        .setRequiresCharging(s.chargingOnly)
+        .build()
+
+    /** Call after any change to the backup settings. */
+    suspend fun reschedule() {
+        val s = settings.get()
+        if (!s.enabled) {
+            wm.cancelUniqueWork(PERIODIC); wm.cancelUniqueWork(NEXT); return
+        }
+        wm.enqueueUniquePeriodicWork(
+            PERIODIC, ExistingPeriodicWorkPolicy.UPDATE,
+            PeriodicWorkRequestBuilder<DriveBackupWorker>(1, TimeUnit.DAYS)
+                .setConstraints(constraints(s))
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofMinutes(15))
+                .build(),
+        )
+    }
+
+    /** "Back up now": any network, not waiting for Wi-Fi or charging. */
+    fun backupNow() {
+        wm.enqueueUniqueWork(
+            NOW, ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<DriveBackupWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .build(),
+        )
+    }
+
+    fun restore(downloadAudio: Boolean) {
+        wm.enqueueUniqueWork(
+            RESTORE, ExistingWorkPolicy.KEEP,
+            OneTimeWorkRequestBuilder<DriveBackupWorker>()
+                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setInputData(workDataOf(DriveBackupWorker.KEY_MODE to DriveBackupWorker.MODE_RESTORE, DriveBackupWorker.KEY_AUDIO to downloadAudio))
+                .build(),
+        )
+    }
+
+    private suspend fun continueLater() {
+        wm.enqueueUniqueWork(
+            NEXT, ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<DriveBackupWorker>().setConstraints(constraints(settings.get()))
+                .setInitialDelay(Duration.ofMinutes(1)).build(),
+        )
+    }
+
+    suspend fun disconnect() {
+        auth.disconnect()
+        settings.update { it.copy(enabled = false, needsSignIn = false) }
+        reschedule()
+    }
+
+    // ---- running ----
+
+    private fun engine() = DriveBackupEngine(DriveRestApi(auth::token))
+
+    suspend fun run(restore: Boolean, downloadAudio: Boolean): ListenableWorker.Result = mutex.withLock {
+        val s = settings.get()
+        if (!restore && !s.enabled) return ListenableWorker.Result.success()
+        val start = System.currentTimeMillis()
+        settings.update { it.copy(lastAttemptMs = start) }
+        try {
+            if (restore) {
+                val msg = doRestore(downloadAudio)
+                settings.update { it.copy(lastResult = msg, needsSignIn = false) }
+            } else {
+                val rep = engine().backup(source, s.includeAudio, start / 1000) { System.currentTimeMillis() - start > BUDGET_MS }
+                Log.i(TAG, rep.line())
+                settings.update {
+                    it.copy(
+                        lastResult = rep.line(), needsSignIn = false,
+                        lastSuccessMs = if (rep.failures == 0) System.currentTimeMillis() else it.lastSuccessMs,
+                    )
+                }
+                if (rep.incomplete) continueLater()
+            }
+            ListenableWorker.Result.success()
+        } catch (e: DriveAuthRequiredException) {
+            settings.update { it.copy(needsSignIn = true, lastResult = e.message.orEmpty()) }
+            graph.notifier.notifyBackupSignIn()
+            ListenableWorker.Result.success()
+        } catch (e: IOException) {
+            settings.update { it.copy(lastResult = "Network error, will retry: ${e.message}") }
+            ListenableWorker.Result.retry()
+        } catch (e: Exception) {
+            Log.w(TAG, "backup failed", e)
+            settings.update { it.copy(lastResult = "Failed: ${e.message ?: e.javaClass.simpleName}") }
+            ListenableWorker.Result.failure()
+        }
+    }
+
+    private val source = object : BackupSource {
+        override suspend fun recordings() = graph.db.recordings().all()
+        override suspend fun policies(): List<PolicyEntity> {
+            graph.db.policies().ensureGroupDefaults()
+            return graph.db.policies().all()
+        }
+        override suspend fun settings() = graph.settings.get()
+        override fun openAudio(r: RecordingEntity): UploadContent.Stream? {
+            val uri = r.uri.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: return null
+            val size = runCatching { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } }.getOrNull()
+                ?.takeIf { it > 0 } ?: return null
+            val name = BackupFormat.audioFileName(r)
+            return UploadContent.Stream(size, BackupFormat.audioMime(name)) {
+                context.contentResolver.openInputStream(uri) ?: throw IOException("can't open $name")
+            }
+        }
+    }
+
+    private val sink = object : RestoreSink {
+        private val dao get() = graph.db.recordings()
+        override suspend fun byHash(hash: String) = dao.byHash(hash)
+        override suspend fun insert(r: RecordingEntity) { dao.insert(r) }
+        override suspend fun update(r: RecordingEntity) = dao.update(r)
+        override suspend fun replacePolicies(policies: List<PolicyEntity>) = graph.db.withTransaction {
+            val p = graph.db.policies()
+            p.all().forEach { p.delete(it.id) }
+            policies.forEach { p.insert(it) }
+            p.ensureGroupDefaults()
+        }
+        override suspend fun applySettings(cloud: AppSettings) =
+            graph.settings.update { local -> DriveBackupEngine.restoredSettings(local, cloud) }
+    }
+
+    private suspend fun rescan() = runCatching {
+        graph.syncFiles(graph.scanner.list(graph.settings.get().pathPrefixes))
+    }.onFailure { Log.w(TAG, "rescan after restore failed", it) }
+
+    private suspend fun doRestore(downloadAudio: Boolean): String {
+        val e = engine()
+        val rep = e.restore(sink, System.currentTimeMillis())
+        rescan() // re-links restored rows to audio already on this phone, by content hash
+        var downloaded = 0
+        var missing = e.missingAudio(graph.db.recordings().all())
+        if (downloadAudio) {
+            val folder = graph.settings.get().pathPrefixes.firstOrNull() ?: "Recordings/Call"
+            for (a in missing) if (runCatching { saveAudio(e, a, folder) }.onFailure { Log.w(TAG, "download ${a.name}", it) }.isSuccess) downloaded++
+            if (downloaded > 0) rescan()
+            missing = e.missingAudio(graph.db.recordings().all())
+        }
+        return buildString {
+            append("Restored ${rep.inserted} calls, updated ${rep.merged}")
+            if (rep.policies > 0) append(", ${rep.policies} policies")
+            if (rep.settings) append(", settings")
+            if (downloaded > 0) append(" · downloaded $downloaded recordings")
+            if (missing.isNotEmpty()) append(" · ${missing.size} recordings only on Drive")
+        }
+    }
+
+    /** Writes a recording from Drive into the recordings folder; the next scan re-links it by hash. */
+    private suspend fun saveAudio(e: DriveBackupEngine, a: CloudAudio, folder: String) = withContext(Dispatchers.IO) {
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Audio.Media.DISPLAY_NAME, a.name)
+            put(MediaStore.Audio.Media.MIME_TYPE, BackupFormat.audioMime(a.name))
+            put(MediaStore.Audio.Media.RELATIVE_PATH, folder.trimEnd('/') + "/")
+            put(MediaStore.Audio.Media.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Audio.Media.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), values)
+            ?: throw IOException("can't create ${a.name}")
+        try {
+            e.download(a) { input -> resolver.openOutputStream(uri)!!.use { input.copyTo(it) } }
+            resolver.update(uri, ContentValues().apply { put(MediaStore.Audio.Media.IS_PENDING, 0) }, null, null)
+        } catch (t: Throwable) {
+            resolver.delete(uri, null, null)
+            throw t
+        }
+    }
+}
+
+class DriveBackupWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    companion object {
+        const val KEY_MODE = "mode"
+        const val KEY_AUDIO = "download_audio"
+        const val MODE_RESTORE = "restore"
+    }
+
+    override suspend fun doWork(): Result {
+        val drive = (applicationContext as CallScribeApp).graph.drive
+        return drive.run(restore = inputData.getString(KEY_MODE) == MODE_RESTORE, downloadAudio = inputData.getBoolean(KEY_AUDIO, false))
+    }
+}

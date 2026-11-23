@@ -25,6 +25,8 @@ class AppGraph(context: Context) {
     val scanner = RecordingScanner(context)
     val providers = ProviderRegistry(secrets)
     val notifier = Notifier(context)
+    /** Optional Google Drive backup (off by default). */
+    val drive by lazy { app.callscribe.backup.DriveBackup(context.applicationContext, this) }
 
     private val syncMutex = Mutex()
     private val store = object : RecordingStore {

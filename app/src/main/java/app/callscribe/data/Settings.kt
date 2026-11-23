@@ -16,6 +16,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -24,6 +25,8 @@ import javax.crypto.spec.GCMParameterSpec
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
+/** Non-secret settings only (API keys live in [SecretStore]); backed up to Drive as JSON. */
+@Serializable
 data class AppSettings(
     val pathPrefixes: List<String> = listOf("Recordings/Call"),
     val autoProcessFromSec: Long = 0,

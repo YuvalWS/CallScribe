@@ -32,18 +32,20 @@ import app.callscribe.pipeline.Notifier
 class MainActivity : ComponentActivity() {
     private var openId by mutableStateOf(-1L)
     private var openRetention by mutableStateOf(false)
+    private var openBackup by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         openId = intent.getLongExtra(Notifier.EXTRA_RECORDING_ID, -1)
         openRetention = intent.getBooleanExtra(Notifier.EXTRA_OPEN_RETENTION, false)
+        openBackup = intent.getBooleanExtra(Notifier.EXTRA_OPEN_BACKUP, false)
         val graph = (application as CallScribeApp).graph
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
                     SetupGate(graph) {
-                        AppNav(graph, openId, openRetention) { openId = -1; openRetention = false }
+                        AppNav(graph, openId, openRetention, openBackup) { openId = -1; openRetention = false; openBackup = false }
                     }
                 }
             }
@@ -54,15 +56,17 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         openId = intent.getLongExtra(Notifier.EXTRA_RECORDING_ID, -1)
         openRetention = intent.getBooleanExtra(Notifier.EXTRA_OPEN_RETENTION, false)
+        openBackup = intent.getBooleanExtra(Notifier.EXTRA_OPEN_BACKUP, false)
     }
 }
 
 @Composable
-private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: Boolean, consumed: () -> Unit) {
+private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: Boolean, openBackup: Boolean, consumed: () -> Unit) {
     val nav = rememberNavController()
-    LaunchedEffect(openId, openRetention) {
+    LaunchedEffect(openId, openRetention, openBackup) {
         if (openId > 0) { nav.navigate("detail/$openId"); consumed() }
         if (openRetention) { nav.navigate("retention"); consumed() }
+        if (openBackup) { nav.navigate("backup"); consumed() }
     }
     NavHost(nav, startDestination = "list") {
         composable("list") {
@@ -82,6 +86,7 @@ private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: 
                 graph, onBack = { nav.popBackStack() }, onProviders = { nav.navigate("providers") },
                 onRules = { nav.navigate("policies") }, onRetention = { nav.navigate("retention") },
                 onRunSetup = { nav.navigate("setup?start=${SetupStep.WELCOME.name}") },
+                onBackup = { nav.navigate("backup") },
             )
         }
         composable("setup?start={start}", arguments = listOf(navArgument("start") { type = NavType.StringType; defaultValue = SetupStep.WELCOME.name })) { e ->
@@ -91,6 +96,7 @@ private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: 
         composable("providers") { ProvidersScreen(graph, onBack = { nav.popBackStack() }) }
         composable("policies") { PoliciesScreen(graph, onBack = { nav.popBackStack() }, onRetention = { nav.navigate("retention") }) }
         composable("retention") { RetentionScreen(graph, onBack = { nav.popBackStack() }) }
+        composable("backup") { BackupScreen(graph, onBack = { nav.popBackStack() }, onPolicies = { nav.navigate("policies") }) }
     }
 }
 

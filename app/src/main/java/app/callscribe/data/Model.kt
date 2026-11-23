@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
+import kotlinx.serialization.Serializable
 
 enum class LabelKind { CONTACT, UNKNOWN_NUMBER, PRIVATE, SPAM, FRAUD, OTHER_LABEL }
 
@@ -11,6 +12,7 @@ enum class Status {
     NOT_TRANSCRIBED, SKIPPED_BY_RULE, QUEUED, TRANSCRIBING, TRANSCRIBED, ANALYZING, ANALYZED, FAILED
 }
 
+@Serializable
 @Entity(
     tableName = "recordings",
     indices = [Index(value = ["contentHash"], unique = true), Index("mediaId")],
@@ -88,6 +90,7 @@ object RelationshipTags {
  * Exactly one target field is set. The most specific matching policy wins as a whole (see docs/plans/policies.md).
  * Retention values are days; [FOREVER] = keep forever; cloud may also be [SAME_AS_LOCAL].
  */
+@Serializable
 @Entity(tableName = "policies")
 data class PolicyEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

@@ -91,7 +91,13 @@ class RetentionV3Test {
 
     @Test fun cloudSameAsLocalFollowsPhoneAudioAndText() {
         val p = PolicyEntity.defaultFor(LabelKind.SPAM).copy(audioRetentionDays = 7, textRetentionDays = 30)
-        val plan = Retention.plan(listOf(rec(1, LabelKind.SPAM, 10), rec(2, LabelKind.SPAM, 40)), listOf(p), NOW)
+        // "Same as local" follows what the phone actually deleted (after the user confirmed the trash), not what is due.
+        val rows = listOf(
+            rec(1, LabelKind.SPAM, 10).copy(audioDeletedAt = 1),
+            rec(2, LabelKind.SPAM, 40).copy(audioDeletedAt = 1, textDeletedAt = 1),
+            rec(3, LabelKind.SPAM, 40), // due locally, not yet deleted: cloud copy stays
+        )
+        val plan = Retention.plan(rows, listOf(p), NOW)
         assertEquals(listOf(1L, 2L), plan.cloudAudio.map { it.id })
         assertEquals(listOf(2L), plan.cloudText.map { it.id })
     }

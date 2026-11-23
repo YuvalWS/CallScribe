@@ -26,6 +26,8 @@ you configure it.
 - Long calls are compressed on the phone (16 kHz mono AAC) before upload.
 - Recordings are identified by content hash, so renames / restores keep their transcripts.
 - Optional webhook export (e.g. to Home Assistant).
+- Optional **Google Drive backup** to your own Drive: transcripts, summaries, policies, settings and (opt-in)
+  recordings; incremental, daily, Wi-Fi/charging options; restore on a new phone re-links calls to audio by content hash.
 - API keys are encrypted with the Android Keystore and excluded from backups.
 
 ## Requirements
@@ -57,7 +59,36 @@ Measured on a real endpoint: a 14-minute call took 14 s of GPU time ≈ **$0.003
 
 "Test connection" is free for every provider.
 
-### 3. Background reliability (Samsung)
+### 3. Google Drive backup (optional)
+Backups go to a visible **CallScribe Backup** folder in *your* Drive (scope `drive.file`: the app can only see files it
+created). API keys are never backed up. There is no CallScribe server: the app talks to Google Drive directly.
+
+Because there is no shared CallScribe server or Google project, **whoever builds the APK registers it with Google once**
+(free, ~10 minutes). Nothing is pasted into the app — Google recognises it by package name + signing certificate.
+1. [console.cloud.google.com](https://console.cloud.google.com) → create a project (e.g. "CallScribe").
+2. **APIs & Services → Library → Google Drive API → Enable.**
+3. **Google Auth Platform → Branding / OAuth consent screen**: User type **External**, app name "CallScribe",
+   your e-mail as support and developer contact. **Data access → Add scope** `.../auth/drive.file`
+   (non-sensitive: no Google verification needed).
+4. **Audience**: either **Publish app** (recommended — in *Testing* mode Google expires access after 7 days) or keep
+   *Testing* and add your Google account under *Test users*.
+5. Get the **SHA-1** of the key that signs the APK you install:
+   - Local builds (debug key, also used for release builds unless you configured a release keystore):
+     ```powershell
+     keytool -list -v -keystore $env:USERPROFILE\.android\debug.keystore -alias androiddebugkey -storepass android
+     ```
+   - Release keystore (e.g. from CI): `keytool -list -v -keystore <your.keystore> -alias <alias>`.
+6. **Clients → Create client → Android**: package name `app.callscribe`, the SHA-1 from step 5.
+   Builds signed with a different key (debug vs release) need **one Android client each** in the same project.
+7. On the phone: CallScribe → Settings → **Google Drive backup** → turn it on, pick your account, allow access.
+   Optionally turn on *Include recordings* (~1 MB per minute of audio). "Back up now" runs immediately.
+
+If turning it on says *"Google rejected this app build"*, the package name or SHA-1 of the installed APK doesn't
+match an Android client (step 5–6). How long backed-up recordings are kept is set per policy (cloud retention); expired
+ones are moved to the Drive trash. **Restore** (same screen) brings calls, transcripts, policies and settings to a new
+phone and can download recordings that aren't on it.
+
+### 4. Background reliability (Samsung)
 Settings → Battery → Background usage limits → **Never sleeping apps** → add CallScribe.
 
 ## Building
@@ -125,5 +156,6 @@ page; later releases update in place.
 
 ## Privacy
 Recordings stay on the phone unless a call is processed. Then the audio goes to *your* RunPod
-endpoint and the transcript to *your* AI provider. No analytics, no crash reporting.
+endpoint and the transcript to *your* AI provider. With Drive backup on, data (and recordings, if chosen) go to
+*your* Google Drive. No analytics, no crash reporting.
 Recording calls you take part in is legal in Israel; check the law where you live.

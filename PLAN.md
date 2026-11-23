@@ -533,9 +533,8 @@ Built and verified on a Galaxy S20 FE (Android 13, One UI 5.1) with 372 real rec
   warnings for odd combos; the call page names the policy that applied. DB v2→v3 (add-only).
 
 ## 4c. TODO
-- **Google Drive backup & sync** — back up the DB (transcripts, analyses, policies; never API keys) and optionally
-  audio to the user's own Drive app-data folder (`drive.appdata` scope). Restore re-links rows to audio by content hash.
-  Needs an OAuth client ID created by whoever builds the app.
+- **Google Drive backup & sync** — implemented on branch `claude/drive-backup-*`, see `docs/plans/drive-backup.md`
+  (scope changed to `drive.file`, a visible folder). Needs on-device verification once an Android OAuth client exists.
 - Monthly cost totals and a budget alert.
 
 ## 5. Phase 4 (optional, later)
