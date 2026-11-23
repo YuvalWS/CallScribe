@@ -87,6 +87,7 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
     val settings by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     var filter by rememberSaveable { mutableStateOf(Filter.ALL) }
     var query by rememberSaveable { mutableStateOf("") }
+    var dateSel by rememberSaveable { mutableStateOf("") }
 
     Scaffold(topBar = {
         TopAppBar(
@@ -108,8 +109,13 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                 trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Clear, "Clear search") } },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
             )
+            val dateRange = remember(dateSel) { DateSelection.resolve(dateSel, java.time.LocalDate.now()) }
+            val shown = remember(all, filter, query, dateRange) {
+                all.filter { filter.test(it) && CallSearch.matches(it, query) && (dateRange?.contains(it.callTimeSec) ?: true) }
+            }
             Text(
-                "${all.size} recordings · $processed transcribed · spent ${Fmt.usd(total)}",
+                (if (shown.size != all.size) "showing ${shown.size} of ${all.size}" else "${all.size} recordings") +
+                    " · $processed transcribed · spent ${Fmt.usd(total)}",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
@@ -120,14 +126,15 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                 Filter.entries.forEach { f ->
                     FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.title) })
                 }
+                DateFilterChip(dateSel) { dateSel = it }
             }
             if (rows == null) return@Column
-            val shown = remember(all, filter, query) { all.filter { filter.test(it) && CallSearch.matches(it, query) } }
             if (shown.isEmpty()) {
                 Text(
                     when {
                         all.isEmpty() -> "No call recordings found yet. Turn on call recording in the Phone app, then tap Rescan."
-                        query.isNotBlank() -> "No calls match \"$query\"."
+                        query.isNotBlank() && dateRange == null -> "No calls match \"$query\"."
+                        dateRange != null -> "No calls match the current search and filters."
                         else -> "Nothing here."
                     },
                     modifier = Modifier.padding(24.dp),
