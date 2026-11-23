@@ -73,8 +73,10 @@ Because there is no shared CallScribe server or Google project, **whoever builds
 3. **Google Auth Platform → Branding / OAuth consent screen**: User type **External**, app name "CallScribe",
    your e-mail as support and developer contact. **Data access → Add scope** `.../auth/drive.file`
    (non-sensitive: no Google verification needed).
-4. **Audience**: either **Publish app** (recommended — in *Testing* mode Google expires access after 7 days) or keep
-   *Testing* and add your Google account under *Test users*.
+4. **Audience**: the quickest start is to keep *Testing* and add your Google account under **Test users**. In Testing
+   mode Google may expire the grant after 7 days; CallScribe then pauses backups and notifies you to reconnect (one tap).
+   To avoid that, **Publish app** — Google requires, on the Branding page, a home page and privacy-policy URL on a
+   domain you verified in Google Search Console (no review is needed for `drive.file`, as long as you upload no logo).
 5. Get the **SHA-1** of the key that signs the APK you install:
    - Local builds (debug key, also used for release builds unless you configured a release keystore):
      ```powershell
