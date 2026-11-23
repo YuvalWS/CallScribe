@@ -5,7 +5,11 @@ on the phone. Once CallScribe transcribes a call, those secrets become **searcha
 cloud services. This plan covers where they end up today, what we can realistically detect and when, how to
 handle them, and a phased build order.
 
-Status: planning only (2026-11-23). Nothing here is built. Open decisions for the user are in §8.
+Status: planning only (2026-11-23). Nothing here is built. The user's decisions are in §8.
+
+**Scope note (user, 2026-11-23):** the transcription endpoint (RunPod) is under the user's own control, so
+secrets reaching it are a lower concern. The focus is everything *after* transcription: local storage, the AI
+provider, notifications, webhook and Drive.
 
 ---
 
@@ -31,7 +35,9 @@ Takeaways:
   Gemini free tier it may be used for training. It also does not *need* the digits — a summary or spam verdict
   is just as good with `[מספר כרטיס]` in place of the number.
 - **Audio has already left by the time we have text** (2) unless transcription is on-device (§2.4).
-- (4) is an existing leak independent of this feature and is cheap to close.
+- (4) stays as is (decision D4: keep Android backup of the DB). Because transcripts are masked locally (D1),
+  the backup then holds masked text only; rows transcribed before the feature existed are covered by the
+  one-off re-scan in Phase 1.
 
 ---
 
@@ -98,6 +104,42 @@ original character range (needed to mask the right characters).
   across segment boundaries when the gap is < ~2 s.
 - Ambiguity: "מאה עשרים ושלוש" may mean 123 or 1-2-3 spoken badly — produce digit-by-digit and compositional
   candidates and keep the one that validates; if none validate, fall back to the cue rule.
+
+#### Interruptions while reading: fillers, back-channels, corrections
+Real dictation is not a clean digit run. Example of what a transcript may look like (synthetic):
+> "המספר זה ארבע חמש שמונה אפס, אמ, רגע… שתיים שלוש — כן — שתיים שלוש אחת שבע, כן, תמשיך, שש שש…"
+
+It contains fillers (אמ, אה, אממ, הממ), the *other speaker's* back-channels (כן, אוקיי, יופי, בסדר, תמשיך,
+הלאה, רגע, שנייה, עוד פעם, מה?), repeats of a group ("שתיים שלוש — כן — שתיים שלוש"), read-backs by the listener,
+and corrections ("ארבע חמש… לא, סליחה, ארבע שש"). Whisper (cloud) often drops fillers but keeps back-channels;
+Zipformer (on-device) keeps more of them. Transcripts here have no speaker labels, so both sides' words are mixed.
+
+**We will not reliably reconstruct the exact digits from such a passage — and we don't need to.** The goal is
+to hide the passage, not to read it. So detection works on *numeric regions*, in two tiers:
+
+1. **Region building (robust, tier used for masking).** Tokenise; classify each token as `NUM` (digit group or
+   number word, incl. ו-prefixed), `GLUE` (filler / back-channel / correction word / punctuation from a fixed
+   list above, plus any single token of ≤2 letters ASR emits for hesitations) or `OTHER`. A region is a maximal
+   stretch of `NUM` tokens where at most **3 consecutive `GLUE` tokens** (and at most one `OTHER` token) separate
+   them, across segment boundaries when the time gap is < ~3 s. The region's digit count is estimated loosely.
+   If a **cue** is near the region and it holds ≥ 4 digits, the **whole region** — fillers, repeats and
+   read-backs included — is masked. Reading style, order and corrections don't matter here.
+2. **Checksum tier (no cue needed, cards only).** From the region, drop `GLUE`, then try a bounded set of
+   readings: digit-by-digit, pairs/compositional per group (§above), and "drop one repeated group" (handles
+   "שתיים שלוש — כן — שתיים שלוש"). If any candidate of 13–19 digits passes Luhn + IIN, it's a card even
+   without a cue. Corrections ("לא, סליחה") are only handled by dropping the group before "לא"; anything
+   messier fails the checksum and falls back to tier 1 (which needs a cue).
+
+What still gets missed (stated honestly in the UI and tests):
+- A number read in pieces **minutes apart** or across a long unrelated exchange — becomes two regions; each is
+  masked only if it has its own nearby cue.
+- A card read with no cue word *and* with a correction or ASR error inside → no checksum match, no cue → missed.
+- Numbers the ASR wrote as non-number words (mis-heard "שש" → "יש") — region breaks; partially masked at best.
+- Over-masking is the expected direction of error near cues: a cue like "קוד" followed by a price will hide the
+  price. That's acceptable given masking is silent and reversible by re-transcribing (D1).
+
+The test corpus (§6) includes each of these patterns, with the "missed" ones recorded as known gaps rather
+than silently passing.
 - Prior art: a Node module `VoicenterTeam/hebrew-itn` does Hebrew ITN (check license/quality before borrowing
   ideas; we won't add a JS runtime). NeMo's WFST ITN has no Hebrew grammar. We write ~200 lines of Kotlin with
   a table-driven tokenizer; it is fully unit-testable on the JVM.
@@ -118,19 +160,19 @@ original character range (needed to mask the right characters).
 | Option | What | Feasibility / cost | Recommend |
 |---|---|---|---|
 | **Redact text sent to the AI** | Replace spans with typed placeholders `[כרטיס אשראי]`, `[ת"ז]`, `[קוד אימות]`, `[סיסמה]` | Trivial once detection exists; no quality loss — the placeholder *helps* the scam verdict ("caller asked for an OTP") | **Phase 1, default on** |
-| **Mask in stored transcript** | `•••• •••• •••• 1234` (cards: last 4), IDs fully masked, codes/passwords `••••`, in `transcriptText` **and** `transcriptJson` segments | Easy; loses the digits for the user forever (they still have Samsung's audio unless deleted) | Phase 1, default on (see decision D1) |
-| Keep original locally, encrypted | Store unmasked text encrypted with a Keystore key; "Show" needs biometric | Medium; key management, backup exclusion, more UI | Not now; revisit if users ask |
+| **Mask in stored transcript** | `•••• •••• •••• 1234` (cards: last 4), IDs fully masked, codes/passwords `••••`, in `transcriptText` **and** `transcriptJson` segments | Easy; the digits are gone from the app. Recovery path: turn the feature off (globally or for this call) and re-transcribe — needs the audio still on the phone and costs one RunPod run | **Phase 1, default on (D1: decided)** — unmasked text is never written to Room |
+| Keep original locally, encrypted | Store unmasked text encrypted with a Keystore key; "Show" needs biometric | Medium; key management, backup exclusion, more UI | **No** (D1) — re-transcription is the undo |
 | **Flag "contains sensitive data"** | Kinds found (CARD, ID, OTP, …) + span offsets, never the values | Small schema change | Phase 1 |
 | Mask AI output | Run the detector on `summary`, `callerIntent`, `action_items`; prompt says never repeat digits of codes/cards/IDs | Easy | Phase 1 |
 | Notifications | `VISIBILITY_PRIVATE` + a public version ("Call processed") for flagged calls; never preview raw transcript for flagged calls | Easy | Phase 1 |
 | Webhook | Per setting: skip flagged calls (default) / send anyway. Today it sends **audio**, so masking text doesn't help | Easy | Phase 2 |
 | Drive backup | Back up masked text only; skip audio of flagged calls by default | Depends on the Drive design — hand the flag to that session | Phase 2 |
-| Android Auto Backup | Exclude `callscribe.db` from cloud backup (or the whole `database` domain) and rely on the Drive feature for backups | One XML change; users lose transcripts on phone migration unless Drive backup exists → coordinate | Phase 1 (decision D4) |
+| Android Auto Backup | Exclude `callscribe.db` from cloud backup | One XML change | **No** (D4) — the DB stays in backup; it only holds masked text |
 | Shorter retention for flagged calls | e.g. trash audio after N days even if the policy says keep | Reuses `RetentionWorker` | Phase 2, opt-in |
 | Per-policy option | "Sensitive calls: mask / skip AI / don't process" per caller group or contact (e.g. bank, health fund) | Policies are being redesigned in another session — add as one column there later | Phase 3 |
 | **Audio redaction (our copy)** | Mute spans in the compressed upload / an exported copy. Spans from segment timestamps (coarse, several seconds) or `word_timestamps: true` on RunPod (ivrit.ai's handler supports it; we send `false` today) or Zipformer token times | `AudioCompressor` already decodes to PCM and re-encodes to AAC, so zeroing PCM ranges is ~20 lines and adds no extra pass. Pad ±0.5 s. | Phase 3 (with screening pass) |
-| Audio redaction (Samsung's original) | Replace Samsung's file with a muted copy | We don't own it: needs `createWriteRequest` user consent per file, changes the content hash (our identity key!), surprises users of Samsung's player | **No.** Offer "delete recording" (trash, recoverable 30 days) instead |
-| **User review** | Banner on the call page: "This call may contain a card number" → **Keep as is** / **Mask** / **Delete recording** | Small UI | Phase 2 |
+| Audio redaction (Samsung's original) | Replace Samsung's file with a muted copy | We don't own it: needs `createWriteRequest` user consent per file, changes the content hash (our identity key!), surprises users of Samsung's player | **No.** "Delete recording" (trash, recoverable 30 days) is enough for now (D5) |
+| **User review** | Banner on the call page: "Card / ID / code numbers were hidden in this call" → **OK** / **Show them (re-transcribe without hiding)** / **Delete recording** | Small UI; "show" sets a per-call `redactionOff` flag and re-runs transcription | Phase 2 |
 
 ---
 
@@ -157,8 +199,12 @@ original character range (needed to mask the right characters).
 **UX that doesn't nag**
 - No extra notification for detection. A small 🔒 chip on the call row; masked text looks like `••••`.
 - Review banner shows once per call on the detail page, dismissed by any choice; no review queue nagging.
-- One setting group *Privacy → Sensitive numbers* with: Hide in transcripts (on) · Hide from AI (on, locked on
-  for Gemini free tier?) · Webhook/Drive for flagged calls (skip) · Delete audio of flagged calls after N days (off).
+- One switch *Privacy → Hide card, ID and code numbers* — **on by default for every provider, labelled
+  "Experimental"** (D3), with one line of explanation and "may miss some, may hide harmless numbers". When on, it
+  applies everywhere: stored transcript, AI request, AI output, notifications. Sub-options (Phase 2): webhook /
+  Drive for flagged calls (skip) · delete audio of flagged calls after N days (off).
+- Turning it off affects new transcriptions only; the settings text says "re-transcribe a call to see its
+  hidden numbers".
 - The onboarding session adds a rule that settings changes update onboarding: add one onboarding line
   ("Card, ID and code numbers are hidden before anything is sent to AI").
 
@@ -167,30 +213,33 @@ original character range (needed to mask the right characters).
 ## 5. Recommended phased approach
 
 **Phase 0 — close existing leaks (no detection needed, ~½ day)**
-1. Exclude `callscribe.db` from Android cloud backup / device transfer (decision D4; coordinate with Drive backup).
-2. Notifications: `VISIBILITY_PRIVATE` with a public version for all call results (cheap, protects every call).
-3. Stop putting model output in `ProviderError` messages shown in notifications.
-4. README Privacy: say plainly that secrets spoken in calls reach RunPod and the AI provider, and that the
+1. Notifications: `VISIBILITY_PRIVATE` with a public version for all call results (cheap, protects every call).
+2. Stop putting model output in `ProviderError` messages shown in notifications.
+3. README Privacy: say plainly that secrets spoken in calls reach RunPod and the AI provider, and that the
    Gemini free tier may use transcripts for training.
 
 **Phase 1 — smallest safe step: detect + redact after transcription (~2–3 days)**
 1. `privacy/HebrewNumberNormalizer.kt`, `privacy/SensitiveDetector.kt` (pure Kotlin; returns spans with kind,
    char range, optional segment index/time), `privacy/Redactor.kt` (masking + AI placeholders).
-2. In `ProcessWorker.transcribe` at `TranscriptionState.Done`: detect on the text, store the flag/spans, store
-   masked text+segments (if D1 = mask).
+2. In `ProcessWorker.transcribe` at `TranscriptionState.Done`: detect on the text, store the flag/spans and
+   **only the masked text + segments** — the unmasked text never reaches Room (D1). Skipped when the global
+   switch is off or the call has `redactionOff`.
 3. In `ProcessWorker.analyze`: send the redacted text always (placeholders); add one prompt line telling the
    model never to repeat numbers and that placeholders mean redacted data; run the detector on the output.
 4. Notifier: never show raw transcript for flagged calls.
 5. 🔒 chip on the row; search keeps working on masked text.
-6. A one-off "Scan existing transcripts" action (and on upgrade, background) because old rows were stored unmasked;
-   store `sensitiveScanVersion` so improved detectors can re-scan.
+6. On upgrade, a background pass masks existing transcripts/summaries (old rows were stored unmasked);
+   `sensitiveScanVersion` lets improved detectors re-scan. Note: re-scanning *masked* text can only hide more,
+   never recover — improved detectors only fully apply to new or re-transcribed calls.
+7. Settings switch (experimental, default on) + onboarding line + README section.
 
 **Phase 2 — user control & other sinks**
-Review banner (keep / mask / delete recording), webhook skip, Drive integration (flag → masked text, no audio),
+Review banner (OK / show via re-transcribe / delete recording), webhook skip, Drive integration (flag → masked text, no audio),
 optional shorter audio retention for flagged calls.
 
-**Phase 3 — before-upload protection (after on-device transcription lands)**
-Screening pass with the on-device model → mute spans in the RunPod upload, or route flagged calls fully on-device;
+**Phase 3 — before-upload protection (after on-device transcription lands; lowest priority)**
+RunPod is user-controlled, so this matters least. When built: run the on-device screening pass for **every** call
+(D6) when the on-device model is installed → mute spans in the RunPod upload;
 per-policy "sensitive handling" once the policy redesign is merged; `word_timestamps` for tighter muting.
 
 **Not planned**: LLM-based detection as the primary gate (it needs the text sent out), modifying Samsung's files,
@@ -205,8 +254,8 @@ val sensitiveKinds: String? = null,
 val sensitiveSpansJson: String? = null,
 /** Detector version that produced the above (re-scan when it increases). */
 val sensitiveScanVersion: Int = 0,
-/** NONE | MASKED | USER_KEPT (user chose keep) */
-val redaction: String = "NONE",
+/** User asked to see this call's numbers: skip masking when re-transcribing it. */
+val redactionOff: Boolean = false,
 ```
 - Other sessions (policies redesign, keep-forever flag, AI tags, Drive backup) are changing `RecordingEntity`,
   `PolicyEntity` and the DB version **in parallel**. Do not pick a version number now: take
@@ -232,6 +281,9 @@ val redaction: String = "NONE",
   assert the cue fallback still masks the run.
 - Report precision/recall on the fixture corpus in the test output; fail the build if recall on checksum kinds
   drops below the set bar.
+- **Interruption corpus** (§2.3): fillers, the other side's back-channels, repeated groups, read-backs and
+  corrections inside the digits, in both Whisper-style and Zipformer-style text; plus the documented "known
+  miss" cases asserted as misses so a change in behaviour is visible.
 - `RedactorTest`: masks text and segments consistently; AI placeholder text contains no digit of the secret.
 - `ProcessWorker` integration via the existing fake RunPod server (`tools/`, debug hooks): a fake job returns a
   transcript with a test card → assert DB row is masked, the AI request body (fake analyzer / OkHttp
@@ -243,20 +295,18 @@ val redaction: String = "NONE",
 
 ## 7. Coordination with parallel sessions
 - **On-device transcription**: Phase 3 depends on it; detector must handle Zipformer's number words.
-- **Drive backup**: should read `sensitiveKinds` and back up masked text / skip flagged audio; and decide with
-  us whether Android Auto Backup of the DB is turned off (D4).
+- **Drive backup**: should read `sensitiveKinds` and skip flagged audio by default; the DB it backs up holds
+  masked text only (D1). Android Auto Backup stays on (D4).
 - **Policies redesign**: leave room for a per-policy "sensitive handling" field.
 - **Onboarding**: new privacy setting ⇒ onboarding text update.
 - **AI tags**: the analyzer schema is changing there; add the "never repeat numbers" prompt line on top of it.
 
-## 8. Open decisions for the user
-- **D1 — local storage**: mask secrets in the stored transcript (recommended; digits are lost, audio still has
-  them) or keep them locally and only redact what leaves the phone?
-- **D2 — AI for flagged calls**: send a redacted transcript (recommended) or skip AI analysis entirely for flagged calls?
-- **D3 — Gemini free tier**: force redaction on (no opt-out) when the provider may train on prompts?
-- **D4 — Android Auto Backup**: stop backing up the DB to Google (recommended; transcripts then survive a phone
-  change only via the Drive backup feature) or keep it?
-- **D5 — audio**: is "delete recording" in the review banner enough, or do you want muted copies (Phase 3) for
-  webhook/Drive?
-- **D6 — screening pass**: once on-device transcription exists, run it before every cloud upload (more battery,
-  protects RunPod) or only for chosen caller groups?
+## 8. Decisions (user, 2026-11-23)
+- **D1 — local storage: mask.** Unmasked text is never stored. Undo = turn the feature off (globally or per call)
+  and re-transcribe.
+- **D2 — AI: send the redacted transcript** (with typed placeholders), never the raw one.
+- **D3 — opt-out for every provider**, on by default, labelled *Experimental*.
+- **D4 — keep Android Auto Backup** of the DB (it only contains masked text).
+- **D5 — "Delete recording" is enough** for audio for now; no muted copies.
+- **D6 — screening pass for every call** once on-device transcription exists (Phase 3, low priority since RunPod
+  is user-controlled).
