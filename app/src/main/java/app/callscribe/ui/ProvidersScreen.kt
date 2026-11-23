@@ -56,17 +56,22 @@ fun ProvidersScreen(graph: AppGraph, onBack: () -> Unit) {
 @Composable
 internal fun TranscriptionProviderFields(graph: AppGraph, st: AppSettings) {
     val scope = rememberCoroutineScope()
+    fun upd(t: (AppSettings) -> AppSettings) = scope.launch { graph.settings.update(t) }
     listOf(
         "ivrit-runpod" to "ivrit.ai on your RunPod endpoint (cloud, most accurate)",
         OnDeviceTranscriber.ID to "On this phone (free, audio never leaves the phone)",
     ).forEach { (id, label) ->
-        val pick = { scope.launch { graph.settings.update { it.copy(transcriberId = id) } } }
-        Row(Modifier.fillMaxWidth().clickable { pick() }, verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(st.transcriberId == id, { pick() })
+        val pick = { pickTranscriber(graph, st, id, ::upd) }
+        Row(Modifier.fillMaxWidth().clickable(onClick = pick), verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(st.transcriberId == id, pick)
             Text(label)
         }
     }
-    if (st.transcriberId == OnDeviceTranscriber.ID) OnDeviceSection(graph, st) else RunPodSection(graph, st)
+    if (st.transcriberId == OnDeviceTranscriber.ID) OnDeviceSection(graph, st) else {
+        OnDeviceLeftover(graph)
+        RunPodSection(graph, st)
+    }
+    DeleteModelPrompt(graph)
 }
 
 /** AI provider choice (Gemini / OpenRouter / Claude) + the chosen provider's fields. Shared with onboarding. */

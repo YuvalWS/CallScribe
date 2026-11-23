@@ -134,7 +134,7 @@ class DebugWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
         val cpu0 = android.os.Process.getElapsedCpuTime()
         val t0 = System.currentTimeMillis()
         val tr = app.callscribe.providers.ondevice.OnDeviceTranscriber(graph.models, threads)
-        val st = tr.transcribeLocal(Uri.parse(r.uri)) { }
+        val st = tr.transcribeLocal(Uri.parse(r.uri), onProgress = { })
         val wall = System.currentTimeMillis() - t0
         val cpu = android.os.Process.getElapsedCpuTime() - cpu0
         sampler.cancel()

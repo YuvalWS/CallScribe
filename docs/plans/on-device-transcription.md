@@ -101,10 +101,44 @@ Debug build, hook `DEBUG_ONDEVICE` (see `app/src/debug/.../DebugReceiver.kt`), o
   release APK **67.0 MB vs ~32 MB before (+35 MB)**. Storing the libs compressed (`useLegacyPackaging`) would shrink the
   download to ~+13 MB [estimate] but Android then extracts them, costing more space on the phone overall, so we keep the default.
 
-## 7. Known limits / follow-ups
+## 7. Known limits
 
-* If Android refuses the foreground service (automatic job started while the app is in the background and the app is
-  not exempt from battery optimisation), WorkManager stops the worker after 10 minutes — calls longer than ~20 min
-  could then fail. Samsung's "Never sleeping apps" (README) normally exempts the app.
-* Turbo (whisper.cpp) as a second, more accurate on-device model: needs the NDK decision (≈1.5 GB on the build PC) and a q8_0 file.
+* **Background time limit — handled.** If Android refuses the foreground service (automatic job started while the
+  app is in the background and the app is not exempt from battery optimisation), WorkManager stops the worker after
+  10 minutes (≈ a 20+ min call). The worker then keeps the partial transcript, marks the call *Failed* with
+  "Android stopped the transcription after 10 minutes… covers only the first N min… tap Transcribe", notifies,
+  and remembers the job id so WorkManager's automatic re-run does not loop. Samsung's "Never sleeping apps" (README)
+  normally avoids the limit; a manual Transcribe with the app open runs as a foreground service.
+* **Model space — handled.** Switching away from *On this phone* asks "Delete the on-device model?", and while
+  another transcriber is selected a downloaded model stays listed with a Delete button.
 * No speaker separation on device.
+
+## 8. Open decisions (to revisit)
+
+### 8.1 Download the native engine with the model (APK back to ~32 MB for everyone) — *user is considering it*
+Today the 33 MB of sherpa-onnx/ONNX Runtime libraries are inside the APK for every user, even cloud-only users.
+Option: ship only the Kotlin wrapper, and download the four arm64 `.so` files (≈33 MB, or ≈13 MB compressed
+[estimate]) together with the model, pinned by SHA-256 to the official sherpa-onnx release, then `System.load()`
+them from app storage.
+* Work: ~half a day. The AAR's Kotlin classes call `System.loadLibrary`, which only searches the APK's lib dir, so
+  we'd vendor the (Apache-2.0) Kotlin wrapper sources with a loader that uses `System.load(path)`.
+* Trade-offs: the app downloads executable code (pinned, but a conscious security decision); not allowed on
+  Google Play (policy forbids code from outside Play), fine for a sideloaded app. If CallScribe ever moves to
+  Play, use a Play Feature Delivery module instead.
+* ivrit.ai's own app bundles its native engines (whisper.cpp and sherpa-onnx) in the APK and downloads only
+  the models (§1).
+
+### 8.2 Whisper Turbo on the phone (more accurate, much slower)
+* Model: the ivrit.ai Turbo model is open source (Apache-2.0); the f16 ggml file is published
+  ([ivrit-ai/whisper-large-v3-turbo-ggml](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ggml), 1.62 GB).
+  The **q8_0** file the ivrit.ai app uses (≈0.87 GB [estimate], same WER as f16 on their clip: 3.31 %) is *not*
+  published: their server quantizes it from the f16 at startup, and their docs list "publish on HF" as "better,
+  not done". Anyone can make it with whisper.cpp's `quantize` tool (q5_1 ≈ 250 MB smaller, WER 4.23 %).
+  Bring-your-own option: let the user paste the URL of their own q8_0 file.
+* Engine: whisper.cpp for Android — needs the **NDK** (≈1.5 GB on the build PC) + CMake, or the single-maintainer
+  `dev.ffmpegkit-maintained:whisper-android` AAR (§4).
+* Which phones: ivrit.ai requires arm64 with dot-product + fp16 instructions, ~6 GB RAM, "2023 on, mid-range and up".
+  Their test lab, 5-min clip: S24 136 s, S25 143 s, A56 302 s; Pixel 6/7 and A54 timed out.
+  A Galaxy S24 FE (Exynos 2400e, 8 GB) qualifies: ≈0.5× real time [estimate] — a 10-min call in ~5 min.
+  The S20 FE passes the check but would take ~2–3 min per audio minute [estimate].
+* UI: a second model in the same "On this phone" card, offered only on phones that pass the CPU/RAM check.

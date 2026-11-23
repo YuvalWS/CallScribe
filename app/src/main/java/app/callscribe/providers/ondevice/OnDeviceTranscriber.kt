@@ -6,6 +6,7 @@ import app.callscribe.pipeline.AudioCompressor
 import app.callscribe.providers.AudioInput
 import app.callscribe.providers.Cost
 import app.callscribe.providers.ProviderError
+import app.callscribe.providers.Segment
 import app.callscribe.providers.Transcriber
 import app.callscribe.providers.Transcript
 import app.callscribe.providers.TranscriptionState
@@ -29,8 +30,11 @@ import java.io.File
 
 /** A transcriber that runs in-process on the phone: no job handle, it just transcribes (and reports progress). */
 interface LocalTranscriber {
-    /** [onProgress] gets 0..100 (decoding counts as the first 5 %). Blocking work runs on a background dispatcher. */
-    suspend fun transcribeLocal(uri: Uri, onProgress: (Int) -> Unit): TranscriptionState
+    /**
+     * [onProgress] gets 0..100 (decoding counts as the first 5 %); [onSegment] gets each finished segment as it is
+     * recognized, so a caller that is stopped half-way can keep what was done. Blocking work runs on a background dispatcher.
+     */
+    suspend fun transcribeLocal(uri: Uri, onProgress: (Int) -> Unit, onSegment: (Segment) -> Unit = {}): TranscriptionState
 }
 
 /** Hebrew transcription on the phone with sherpa-onnx + ivrit.ai's streaming Zipformer. Free, nothing leaves the phone. */
@@ -100,7 +104,7 @@ class OnDeviceTranscriber(
     override suspend fun poll(handle: String): TranscriptionState =
         TranscriptionState.Failed("On-device transcription has no jobs", false)
 
-    override suspend fun transcribeLocal(uri: Uri, onProgress: (Int) -> Unit): TranscriptionState = withContext(Dispatchers.IO) {
+    override suspend fun transcribeLocal(uri: Uri, onProgress: (Int) -> Unit, onSegment: (Segment) -> Unit): TranscriptionState = withContext(Dispatchers.IO) {
         val ctx = store.context
         val t0 = SystemClock.elapsedRealtime()
         val pcm = File.createTempFile("pcm", ".raw", ctx.cacheDir)
@@ -131,7 +135,7 @@ class OnDeviceTranscriber(
                             fed += n
                             while (rec.isReady(stream)) rec.decode(stream)
                             if (rec.isEndpoint(stream)) {
-                                asm.endpoint(rec.getResult(stream).text, fed.toDouble() / RATE)
+                                asm.endpoint(rec.getResult(stream).text, fed.toDouble() / RATE)?.let(onSegment)
                                 rec.reset(stream)
                             }
                             progress.update(fed, total)

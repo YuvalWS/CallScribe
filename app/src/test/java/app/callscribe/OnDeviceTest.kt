@@ -22,6 +22,13 @@ class SegmentAssemblerTest {
         assertEquals("שלום מה שלומך הכל טוב תודה", SegmentAssembler.join(segs))
     }
 
+    @Test fun endpointReturnsEachNewSegmentForPartialResults() {
+        val a = SegmentAssembler()
+        assertEquals(Segment(0.0, 3.0, "אחת"), a.endpoint("אחת", 3.0))
+        assertEquals(null, a.endpoint(" ", 4.0))
+        assertEquals(Segment(4.0, 5.5, "שתיים"), a.endpoint("שתיים", 5.5))
+    }
+
     @Test fun emptyAudioGivesNoSegments() {
         val segs = SegmentAssembler().finish("", 0.0)
         assertTrue(segs.isEmpty())

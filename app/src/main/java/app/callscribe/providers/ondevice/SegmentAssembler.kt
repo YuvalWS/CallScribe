@@ -10,11 +10,12 @@ class SegmentAssembler {
     private val segments = mutableListOf<Segment>()
     private var segStart = 0.0
 
-    /** The recognizer reported an endpoint at audio position [now] with the utterance [text]. */
-    fun endpoint(text: String, now: Double) {
+    /** The recognizer reported an endpoint at audio position [now] with the utterance [text]; returns the new segment, if any. */
+    fun endpoint(text: String, now: Double): Segment? {
         val t = text.trim().replace(Regex("\\s+"), " ")
-        if (t.isNotEmpty()) segments += Segment(segStart, maxOf(now, segStart), t)
+        val seg = if (t.isNotEmpty()) Segment(segStart, maxOf(now, segStart), t).also { segments += it } else null
         segStart = now
+        return seg
     }
 
     /** Input ended at [end]; [text] is whatever the recognizer still holds. */

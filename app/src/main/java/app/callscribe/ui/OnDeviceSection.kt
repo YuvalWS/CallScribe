@@ -3,7 +3,11 @@ package app.callscribe.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Alignment
+import app.callscribe.providers.ondevice.OnDeviceTranscriber
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -25,6 +29,41 @@ import app.callscribe.providers.ProviderError
 import app.callscribe.providers.ondevice.ModelState
 import app.callscribe.providers.ondevice.OnDeviceModels
 import kotlinx.coroutines.launch
+
+private val askDelete = mutableStateOf(false)
+
+/** Switching away from on-device transcription offers to free the model's space. */
+internal fun pickTranscriber(graph: AppGraph, st: AppSettings, id: String, upd: ((AppSettings) -> AppSettings) -> Any) {
+    if (id == st.transcriberId) return
+    upd { it.copy(transcriberId = id) }
+    if (st.transcriberId == OnDeviceTranscriber.ID && graph.models.isInstalled(OnDeviceModels.ZIPFORMER_HE)) askDelete.value = true
+}
+
+@Composable
+internal fun DeleteModelPrompt(graph: AppGraph) {
+    if (!askDelete.value) return
+    val model = OnDeviceModels.ZIPFORMER_HE
+    AlertDialog(
+        onDismissRequest = { askDelete.value = false },
+        title = { Text("Delete the on-device model?") },
+        text = { Text("It uses ${"%.0f MB".format(graph.models.usedBytes(model) / 1e6)} on the phone. You can download it again any time.") },
+        confirmButton = { TextButton(onClick = { graph.models.delete(model); askDelete.value = false }) { Text("Delete") } },
+        dismissButton = { TextButton(onClick = { askDelete.value = false }) { Text("Keep") } },
+    )
+}
+
+/** While another transcriber is selected, a downloaded model still shows here so its space can be freed. */
+@Composable
+internal fun OnDeviceLeftover(graph: AppGraph) {
+    val model = OnDeviceModels.ZIPFORMER_HE
+    val state by graph.models.state(model).collectAsStateWithLifecycle()
+    if (state != ModelState.Installed) return
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text("On-device model downloaded (${"%.0f MB".format(graph.models.usedBytes(model) / 1e6)}), not in use.",
+            style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+        OutlinedButton(onClick = { graph.models.delete(model) }) { Text("Delete") }
+    }
+}
 
 /** Settings → Providers → "On this phone": model download / delete, threads, charging switch, test. */
 @Composable

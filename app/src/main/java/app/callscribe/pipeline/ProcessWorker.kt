@@ -16,6 +16,10 @@ import app.callscribe.providers.ProviderError
 import app.callscribe.providers.Segment
 import app.callscribe.providers.TranscriptionState
 import app.callscribe.providers.ondevice.LocalTranscriber
+import app.callscribe.providers.ondevice.SegmentAssembler
+import androidx.work.WorkInfo
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -53,6 +57,8 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         val steps = inputData.getString(KEY_STEPS).orEmpty().split(',').filter { it.isNotBlank() }.toSet()
         val force = inputData.getBoolean(KEY_FORCE, false)
         var row = dao.get(id) ?: return Result.failure()
+        // This exact job was already stopped by Android's time limit and its partial transcript saved: don't loop.
+        if (timeoutMarks().getString(id.toString(), null) == this.id.toString()) return Result.failure()
         if (row.fileMissing) {
             dao.setStatus(id, Status.FAILED, "Audio file is missing"); return Result.failure()
         }
@@ -76,6 +82,8 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             }
             graph.notifier.notifyResult(row)
             return Result.success()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e // stopped by WorkManager; it reschedules (or the time-limit handler already recorded why)
         } catch (e: ProviderError) {
             Log.w(TAG, "provider error", e)
             return if (e.retryable && runAttemptCount < MAX_ATTEMPTS) {
@@ -169,11 +177,21 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         } catch (e: Exception) {
             Log.i(TAG, "running on-device transcription without a foreground service: ${e.message}")
         }
+        val partial = java.util.Collections.synchronizedList(mutableListOf<Segment>())
         val st = try {
-            tr.transcribeLocal(Uri.parse(row.uri)) { pct ->
-                note.update(pct)
-                if (pct % 10 == 0) setProgressAsync(androidx.work.workDataOf("progress" to pct))
+            tr.transcribeLocal(
+                Uri.parse(row.uri),
+                onProgress = { pct ->
+                    note.update(pct)
+                    if (pct % 10 == 0) setProgressAsync(androidx.work.workDataOf("progress" to pct))
+                },
+                onSegment = { partial += it },
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            if (stopReason == WorkInfo.STOP_REASON_TIMEOUT || stopReason == WorkInfo.STOP_REASON_FOREGROUND_SERVICE_TIMEOUT) {
+                withContext(NonCancellable) { onTimeLimit(row, partial.toList()) }
             }
+            throw e
         } finally {
             note.cancel()
         }
@@ -195,6 +213,31 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             throw ProviderError("Recording too long for this provider even after compression (${compressed.size / 1_000_000} MB)", false)
         }
         return AudioInput(compressed, "audio/mp4", row.displayName)
+    }
+
+    private fun timeoutMarks() = applicationContext.getSharedPreferences("ondevice_timeouts", Context.MODE_PRIVATE)
+
+    /**
+     * Android stopped an on-device transcription at its background time limit (10 min without a foreground service).
+     * Keep what was transcribed, say why, and mark this job so WorkManager's automatic re-run doesn't start over in a loop.
+     */
+    private suspend fun onTimeLimit(row: RecordingEntity, partial: List<Segment>) {
+        timeoutMarks().edit().putString(row.id.toString(), id.toString()).apply()
+        val doneMin = (partial.lastOrNull()?.end ?: 0.0) / 60
+        val reason = "Android stopped the transcription after 10 minutes in the background" +
+            (if (partial.isNotEmpty()) " — transcript covers only the first %.0f min".format(doneMin) else "") +
+            ". Open CallScribe and tap Transcribe to finish it."
+        val cur = dao.get(row.id) ?: return
+        dao.update(
+            cur.copy(
+                transcriptText = if (partial.isNotEmpty()) SegmentAssembler.join(partial) else cur.transcriptText,
+                transcriptJson = if (partial.isNotEmpty()) segJson.encodeToString(ListSerializer(Segment.serializer()), partial) else cur.transcriptJson,
+                status = Status.FAILED,
+                error = reason,
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+        dao.get(row.id)?.let { graph.notifier.notifyResult(it) }
     }
 
     private suspend fun analyze(row: RecordingEntity) {
