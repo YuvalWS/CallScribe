@@ -44,7 +44,7 @@ class LiveProvidersTest {
         check(OpenRouterAnalyzer(key, "anthropic/claude-haiku-5.5"))
     }
 
-    /** Made-up Hebrew calls, one per tag. Gemini only (free tier; spaced by the analyzer's rpm limiter). */
+    /** Made-up Hebrew calls, one per tag. Gemini spaces its requests with the rpm limiter (free tier). */
     private val tagCases = listOf(
         Triple("family_friends", CallMeta("אמא", null, "CONTACT", 40, "Fri 2026-11-20 12:30"), """
             היי מותק, זאת אמא. רציתי לשאול אם אתם באים לארוחת שישי הערב. סבתא מאוד רוצה לראות את הילדים.
@@ -58,20 +58,38 @@ class LiveProvidersTest {
             שלום, מדבר יוסי מחומרי בניין השרון. ההזמנה שלך של הקרמיקה והדבק הגיעה למחסן.
             אני צריך שתאשר את הצעת המחיר שנשלחה אליך ואת מועד האספקה ליום רביעי בבוקר. תודה.
         """.trimIndent()),
+        Triple("services", CallMeta("+97239876543", null, "UNKNOWN_NUMBER", 30, "Thu 2026-11-26 08:20"), """
+            שלום, כאן מרפאת מכבי שירותי בריאות. זוהי תזכורת לתור שלך לרופא המשפחה ביום ראשון בשעה תשע וחצי.
+            לאישור הגעה הקש אחת, לביטול התור הקש שתיים.
+        """.trimIndent()),
         Triple("other", CallMeta("+972541239876", null, "UNKNOWN_NUMBER", 15, "Wed 2026-11-25 18:40"), """
             הלו? רינה? אה, סליחה, כנראה טעיתי במספר. חיפשתי את רינה כהן. סליחה על ההפרעה, יום טוב.
         """.trimIndent()),
     )
 
-    @Test fun geminiTags() = runBlocking {
-        val key = live("GEMINI_API_KEY"); assumeTrue(key != null)
-        val model = System.getenv("CALLSCRIBE_GEMINI_MODEL") ?: "gemini-3.5-flash-lite"
-        val an = GeminiAnalyzer(key!!, model, rpm = 15, priceInPerM = 0.0, priceOutPerM = 0.0)
+    private fun checkTags(an: CallAnalyzer) = runBlocking {
+        var cost = 0.0
         val results = tagCases.map { (want, meta, text) ->
-            val r = an.analyze(text, meta).analysis
-            println("[gemini tags] want=$want got=${r.relationship} verdict=${r.verdict} category=${r.category} intent=${r.caller_intent}")
+            val res = an.analyze(text, meta)
+            val r = res.analysis
+            cost += res.cost?.usd ?: 0.0
+            println("[${an.id} tags] want=$want got=${r.relationship} verdict=${r.verdict} category=${r.category} " +
+                "tokens=${res.inputTokens}/${res.outputTokens} cost=$${"%.6f".format(res.cost?.usd ?: 0.0)} intent=${r.caller_intent}")
             want to r.relationship
         }
+        println("[${an.id} tags] total cost for ${tagCases.size} calls: $${"%.6f".format(cost)}")
         assertEquals(results.map { it.first }, results.map { it.second })
+    }
+
+    @Test fun geminiTags() {
+        val key = live("GEMINI_API_KEY"); assumeTrue(key != null)
+        val model = System.getenv("CALLSCRIBE_GEMINI_MODEL") ?: "gemini-3.5-flash-lite"
+        checkTags(GeminiAnalyzer(key!!, model, rpm = 15, priceInPerM = 0.0, priceOutPerM = 0.0))
+    }
+
+    /** Paid (~$0.0003 per call with claude-haiku-5.5): one request per tag case. */
+    @Test fun openRouterTags() {
+        val key = live("OPENROUTER_API_KEY"); assumeTrue(key != null)
+        checkTags(OpenRouterAnalyzer(key!!, System.getenv("CALLSCRIBE_OPENROUTER_MODEL") ?: "anthropic/claude-haiku-5.5"))
     }
 }
