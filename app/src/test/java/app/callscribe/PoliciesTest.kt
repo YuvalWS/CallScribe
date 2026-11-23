@@ -177,7 +177,7 @@ class MigrationTest {
             )
 
             DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
-                fresh.createStatement().execute(policiesCreateSql(3))
+                fresh.createStatement().execute(policiesCreateSql(5))
                 assertEquals(columns(fresh), columns(c))
             }
         }
