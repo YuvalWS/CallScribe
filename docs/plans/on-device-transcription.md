@@ -35,7 +35,7 @@ Phone: Galaxy S20 FE (Snapdragon 865: 1×A77 @2.84 + 3×A77 @2.42 + 4×A55, 6 GB
 | | Cloud (today) | On-device **Zipformer** (this change) | On-device **Turbo** (whisper.cpp, not done) |
 |---|---|---|---|
 | Model download | 0 | **72 MB** once [measured, HF API] | 1.62 GB (f16; the only file on HF) |
-| APK growth | 0 | **+33 MB uncompressed** arm64 libs (onnxruntime 22 MB + sherpa 11 MB) [measured from AAR] — see §6 for the final APK | ~2–4 MB [estimate], but needs NDK + CMake build (~1.5 GB NDK on the build PC) or a single-maintainer prebuilt AAR |
+| APK growth | 0 | **+35 MB** release APK (32 → 67 MB) [measured]: arm64 libs stored uncompressed (onnxruntime 22 MB + sherpa 11 MB) | ~2–4 MB [estimate], but needs NDK + CMake build (~1.5 GB NDK on the build PC) or a single-maintainer prebuilt AAR |
 | RAM while running | — | ~150–250 MB [estimate] | ~2 GB with f16 [estimate] |
 | 1-min call | ~15–30 s incl. cold start | **25 s** [measured, 2 threads] | ~2–3 min [estimate: S25 CPU greedy 1.1×, S865 ≈ 2× slower] |
 | 10-min call | ~25 s (14-min call = 14 s GPU, PLAN §4a) | **~4 min** [estimate: measured RTF 0.41 × 10] | ~20–30 min [estimate]; ivrit.ai's test lab saw older phones time out |
@@ -98,7 +98,8 @@ Debug build, hook `DEBUG_ONDEVICE` (see `app/src/debug/.../DebugReceiver.kt`), o
   `CURRENT_NOW`/charge counter unsupported → 0). Estimate from CPU time: 44 CPU-seconds on Cortex-A77 cores at
   roughly 1 W each ≈ 45–50 J per minute of audio ≈ **0.08 % of the 17 Wh battery per minute of audio** (≈ 1 % for a 10-min call).
 * APK: arm64 native libraries add **33.0 MB stored uncompressed** (libonnxruntime 22.2 MB, sherpa-onnx 10.7 MB);
-  release APK size in the final report.
+  release APK **67.0 MB vs ~32 MB before (+35 MB)**. Storing the libs compressed (`useLegacyPackaging`) would shrink the
+  download to ~+13 MB [estimate] but Android then extracts them, costing more space on the phone overall, so we keep the default.
 
 ## 7. Known limits / follow-ups
 
