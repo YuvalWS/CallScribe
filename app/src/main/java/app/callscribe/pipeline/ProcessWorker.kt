@@ -15,6 +15,7 @@ import app.callscribe.providers.CallMeta
 import app.callscribe.providers.ProviderError
 import app.callscribe.providers.Segment
 import app.callscribe.providers.TranscriptionState
+import app.callscribe.providers.ondevice.LocalTranscriber
 import kotlinx.coroutines.delay
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
@@ -103,6 +104,7 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         val tr = graph.providers.transcriber(settings)
             ?: return Outcome.Fail("No transcription provider selected")
         if (!tr.isConfigured()) return Outcome.Fail("Transcription provider is not set up (Settings → Providers)")
+        if (tr is LocalTranscriber) return transcribeOnDevice(row0, tr)
 
         var row = row0
         // Resume a job submitted by an earlier attempt instead of paying twice.
@@ -128,27 +130,58 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                     return if (st.retryable) Outcome.Retry(st.message) else Outcome.Fail(st.message)
                 }
                 is TranscriptionState.Done -> {
-                    val segs = segJson.encodeToString(ListSerializer(Segment.serializer()), st.transcript.segments)
-                    val cur = dao.get(row.id)!!
-                    dao.update(
-                        cur.copy(
-                            transcriptText = st.transcript.text,
-                            transcriptJson = segs,
-                            transcriberId = tr.id,
-                            providerJobId = null,
-                            // Costs accumulate across re-transcriptions: it's what was actually spent on this call.
-                            transcriptionCostUsd = (cur.transcriptionCostUsd ?: 0.0) + (st.cost?.usd ?: 0.0),
-                            transcriptionGpuMs = (cur.transcriptionGpuMs ?: 0) + (st.cost?.gpuMs ?: 0),
-                            status = Status.TRANSCRIBED,
-                            error = null,
-                            updatedAt = System.currentTimeMillis(),
-                        )
-                    )
+                    saveTranscript(row.id, tr.id, st)
                     return Outcome.Ok
                 }
             }
         }
         return Outcome.Retry("Still waiting for the transcription server")
+    }
+
+    private suspend fun saveTranscript(id: Long, transcriberId: String, st: TranscriptionState.Done) {
+        val segs = segJson.encodeToString(ListSerializer(Segment.serializer()), st.transcript.segments)
+        val cur = dao.get(id)!!
+        dao.update(
+            cur.copy(
+                transcriptText = st.transcript.text,
+                transcriptJson = segs,
+                transcriberId = transcriberId,
+                providerJobId = null,
+                // Costs accumulate across re-transcriptions: it's what was actually spent on this call.
+                transcriptionCostUsd = (cur.transcriptionCostUsd ?: 0.0) + (st.cost?.usd ?: 0.0),
+                transcriptionGpuMs = (cur.transcriptionGpuMs ?: 0) + (st.cost?.gpuMs ?: 0),
+                status = Status.TRANSCRIBED,
+                error = null,
+                updatedAt = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    /**
+     * Runs the model on the phone. Can take minutes for long calls, so the worker asks to become a foreground service
+     * with a progress notification; if Android refuses (app in the background), it carries on as a normal worker.
+     */
+    private suspend fun transcribeOnDevice(row: RecordingEntity, tr: LocalTranscriber): Outcome {
+        dao.setStatus(row.id, Status.TRANSCRIBING)
+        val note = TranscribeProgress(applicationContext, row)
+        try {
+            setForeground(note.foregroundInfo(0))
+        } catch (e: Exception) {
+            Log.i(TAG, "running on-device transcription without a foreground service: ${e.message}")
+        }
+        val st = try {
+            tr.transcribeLocal(Uri.parse(row.uri)) { pct ->
+                note.update(pct)
+                if (pct % 10 == 0) setProgressAsync(androidx.work.workDataOf("progress" to pct))
+            }
+        } finally {
+            note.cancel()
+        }
+        return when (st) {
+            is TranscriptionState.Done -> { saveTranscript(row.id, (tr as app.callscribe.providers.Transcriber).id, st); Outcome.Ok }
+            is TranscriptionState.Failed -> if (st.retryable) Outcome.Retry(st.message) else Outcome.Fail(st.message)
+            is TranscriptionState.Pending -> Outcome.Retry(st.status)
+        }
     }
 
     private fun loadAudio(row: RecordingEntity, maxBytes: Long): AudioInput {

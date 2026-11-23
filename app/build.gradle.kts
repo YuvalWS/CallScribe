@@ -1,3 +1,6 @@
+import java.net.URI
+import java.security.MessageDigest
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -35,6 +38,8 @@ android {
         versionCode = buildNumber ?: 1
         versionName = if (buildNumber != null) "$baseVersion.$buildNumber" else "$baseVersion.0-local"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // On-device transcription ships native libraries for 64-bit ARM only (every phone this app targets).
+        ndk { abiFilters += "arm64-v8a" }
     }
 
     buildTypes {
@@ -70,6 +75,32 @@ android {
     }
 }
 
+/**
+ * sherpa-onnx (on-device speech recognition, Apache-2.0) is not on Maven Central; its prebuilt AAR is published on
+ * GitHub releases. Download it once into the Gradle user home, pinned by SHA-256 — no NDK and no binary in git.
+ */
+val sherpaOnnxAar: File = run {
+    val version = "2.0.3"
+    val sha256 = "4c766e2e74c9d33d595338c21fe3b305c73ba45d47e96a235675c33142a2ec50"
+    val file = gradle.gradleUserHomeDir.resolve("callscribe-deps/sherpa-onnx-$version.aar")
+    fun digest(f: File) = f.inputStream().use { input ->
+        val md = MessageDigest.getInstance("SHA-256")
+        val buf = ByteArray(1 shl 16)
+        while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+        md.digest().joinToString("") { "%02x".format(it) }
+    }
+    if (!file.exists() || digest(file) != sha256) {
+        file.parentFile.mkdirs()
+        val part = File(file.path + ".part")
+        val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/v$version/sherpa-onnx-$version.aar"
+        logger.lifecycle("Downloading $url")
+        URI(url).toURL().openStream().use { input -> part.outputStream().use { input.copyTo(it) } }
+        check(digest(part) == sha256) { "sherpa-onnx AAR checksum mismatch" }
+        file.delete(); check(part.renameTo(file))
+    }
+    file
+}
+
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
 }
@@ -100,6 +131,7 @@ dependencies {
     implementation("com.anthropic:anthropic-java:3.8.0")
     // Google sign-in for the optional Drive backup (AuthorizationClient only; Drive is called over plain REST).
     implementation("com.google.android.gms:play-services-auth:22.0.0")
+    implementation(files(sherpaOnnxAar))
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250517")

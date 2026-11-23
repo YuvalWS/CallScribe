@@ -14,6 +14,8 @@ import androidx.work.workDataOf
 import app.callscribe.CallScribeApp
 import app.callscribe.pipeline.AudioCompressor
 import java.io.File
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
  * Debug builds only. Lets a developer exercise parts of the pipeline over adb:
@@ -26,7 +28,7 @@ class DebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val req = OneTimeWorkRequestBuilder<DebugWorker>()
             .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-            .setInputData(workDataOf("action" to intent.action, "id" to intent.getLongExtra("id", -1)))
+            .setInputData(workDataOf("action" to intent.action, "id" to intent.getLongExtra("id", -1), "threads" to intent.getIntExtra("threads", 2)))
             .build()
         WorkManager.getInstance(context).enqueue(req)
     }
@@ -88,6 +90,7 @@ class DebugWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
                     graph.settings.update { it.copy(onboardingDone = false, setupBannerDismissed = false) }
                     Log.i(TAG, "onboarding reset")
                 }
+                "app.callscribe.DEBUG_ONDEVICE" -> onDeviceBenchmark(graph, inputData.getLong("id", -1), inputData.getInt("threads", 2))
                 "app.callscribe.DEBUG_DUMP" -> {
                     val all = graph.db.recordings().all()
                     Log.i(TAG, "rows=${all.size} by kind=${all.groupingBy { it.labelKind }.eachCount()} by status=${all.groupingBy { it.status }.eachCount()}")
@@ -100,6 +103,50 @@ class DebugWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
             Log.e(TAG, "debug action failed", e)
         }
         return Result.success()
+    }
+
+    /**
+     * Downloads the on-device model if needed, then transcribes one recording (id, or the one closest to 60 s) on the
+     * phone and logs time, CPU time and battery current. Does not touch settings or the database.
+     *   adb shell am broadcast -n app.callscribe/.debug.DebugReceiver -a app.callscribe.DEBUG_ONDEVICE [--el id 12] [--ei threads 2]
+     */
+    private suspend fun onDeviceBenchmark(graph: app.callscribe.AppGraph, id: Long, threads: Int) = kotlinx.coroutines.coroutineScope {
+        val m = app.callscribe.providers.ondevice.OnDeviceModels.ZIPFORMER_HE
+        if (!graph.models.isInstalled(m)) {
+            val t0 = System.currentTimeMillis()
+            graph.models.startDownload(m)
+            val end = graph.models.state(m).first {
+                it is app.callscribe.providers.ondevice.ModelState.Installed || it is app.callscribe.providers.ondevice.ModelState.Failed
+            }
+            Log.i(TAG, "model download: $end in ${System.currentTimeMillis() - t0} ms")
+            if (end !is app.callscribe.providers.ondevice.ModelState.Installed) return@coroutineScope
+        }
+        val rows = graph.db.recordings().all().filter { !it.fileMissing }
+        val r = rows.firstOrNull { it.id == id } ?: rows.minByOrNull { kotlin.math.abs(it.durationMs - 60_000) } ?: return@coroutineScope
+        val bm = applicationContext.getSystemService(android.os.BatteryManager::class.java)
+        fun currentUa() = bm.getLongProperty(android.os.BatteryManager.BATTERY_PROPERTY_CURRENT_NOW)
+        fun chargeUah() = bm.getLongProperty(android.os.BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+        val idle = (1..5).map { kotlinx.coroutines.delay(1000); currentUa() }.average()
+        val samples = mutableListOf<Long>()
+        val sampler = launch { while (true) { samples += currentUa(); kotlinx.coroutines.delay(500) } }
+        val pct0 = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val q0 = chargeUah()
+        val cpu0 = android.os.Process.getElapsedCpuTime()
+        val t0 = System.currentTimeMillis()
+        val tr = app.callscribe.providers.ondevice.OnDeviceTranscriber(graph.models, threads)
+        val st = tr.transcribeLocal(Uri.parse(r.uri)) { }
+        val wall = System.currentTimeMillis() - t0
+        val cpu = android.os.Process.getElapsedCpuTime() - cpu0
+        sampler.cancel()
+        val busy = samples.average()
+        Log.i(TAG, "ondevice id=${r.id} dur=${r.durationMs / 1000}s threads=$threads wall=${wall}ms cpu=${cpu}ms " +
+            "rtf=${"%.3f".format(wall / r.durationMs.toDouble())} battery%=$pct0->${bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)} " +
+            "chargeCounter dUAh=${chargeUah() - q0} currentNow idle=${idle.toLong()}uA busy=${busy.toLong()}uA plugged=${bm.isCharging}")
+        when (st) {
+            is app.callscribe.providers.TranscriptionState.Done ->
+                Log.i(TAG, "ondevice segs=${st.transcript.segments.size} raw=${st.transcript.rawJson} text=${st.transcript.text.take(300)}")
+            else -> Log.i(TAG, "ondevice result $st")
+        }
     }
 
     companion object { private const val TAG = "CallScribeDebug" }

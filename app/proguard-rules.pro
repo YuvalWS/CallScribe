@@ -20,3 +20,5 @@
 -dontwarn com.google.auto.value.AutoValue
 -dontwarn java.lang.reflect.AnnotatedParameterizedType
 -dontwarn java.lang.reflect.AnnotatedType
+# sherpa-onnx: the native code reads the Kotlin config classes' fields by name over JNI.
+-keep class com.k2fsa.sherpa.onnx.** { *; }

@@ -23,7 +23,8 @@ class AppGraph(context: Context) {
     val settings = SettingsRepository(context)
     val secrets = SecretStore(context)
     val scanner = RecordingScanner(context)
-    val providers = ProviderRegistry(secrets)
+    val models = app.callscribe.providers.ondevice.ModelStore(context)
+    val providers = ProviderRegistry(secrets, models)
     val notifier = Notifier(context)
     /** Optional Google Drive backup (off by default). */
     val drive by lazy { app.callscribe.backup.DriveBackup(context.applicationContext, this) }

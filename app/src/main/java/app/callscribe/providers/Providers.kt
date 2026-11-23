@@ -77,8 +77,11 @@ interface CallAnalyzer {
 class ProviderError(message: String, val retryable: Boolean) : Exception(message)
 
 /** Maps provider ids to implementations built from the current settings. Add new providers here. */
-class ProviderRegistry(private val secrets: SecretStore) {
-    val transcriberIds = listOf("ivrit-runpod")
+class ProviderRegistry(
+    private val secrets: SecretStore,
+    private val models: app.callscribe.providers.ondevice.ModelStore? = null,
+) {
+    val transcriberIds = listOf("ivrit-runpod", app.callscribe.providers.ondevice.OnDeviceTranscriber.ID)
     val analyzerIds = listOf("gemini", "openrouter", "claude")
 
     fun transcriber(s: AppSettings): Transcriber? = when (s.transcriberId) {
@@ -90,8 +93,14 @@ class ProviderRegistry(private val secrets: SecretStore) {
             pricePerSec = s.runpodPricePerSec,
             baseUrl = s.runpodBaseUrl,
         )
+        app.callscribe.providers.ondevice.OnDeviceTranscriber.ID -> models?.let {
+            app.callscribe.providers.ondevice.OnDeviceTranscriber(it, threads = s.onDeviceThreads)
+        }
         else -> null
     }
+
+    /** True when the selected transcriber runs on the phone (no network needed, may need charging). */
+    fun isOnDevice(s: AppSettings) = s.transcriberId == app.callscribe.providers.ondevice.OnDeviceTranscriber.ID
 
     fun analyzer(s: AppSettings): CallAnalyzer? = when (s.analyzerId) {
         "claude" -> app.callscribe.providers.claude.ClaudeAnalyzer(

@@ -60,9 +60,21 @@ object WorkScheduler {
         )
     }
 
-    fun enqueueProcess(context: Context, recordingId: Long, steps: Set<String>, force: Boolean) {
+    /**
+     * [onDevice]: transcription runs on the phone, so the network is only needed for export/analysis.
+     * [requireCharging]: wait for the charger (on-device automatic jobs, to spare the battery).
+     */
+    fun enqueueProcess(
+        context: Context, recordingId: Long, steps: Set<String>, force: Boolean,
+        onDevice: Boolean = false, requireCharging: Boolean = false,
+    ) {
+        val needsNetwork = !onDevice || ProcessWorker.STEP_EXPORT in steps || ProcessWorker.STEP_ANALYZE in steps
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(if (needsNetwork) NetworkType.CONNECTED else NetworkType.NOT_REQUIRED)
+            .setRequiresCharging(requireCharging && onDevice && ProcessWorker.STEP_TRANSCRIBE in steps)
+            .build()
         val req = OneTimeWorkRequestBuilder<ProcessWorker>()
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofSeconds(30))
             .setInputData(
                 workDataOf(
@@ -133,7 +145,11 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         }
         if (steps.isEmpty()) return
         graph.db.recordings().setStatus(row.id, Status.QUEUED)
-        WorkScheduler.enqueueProcess(applicationContext, row.id, steps, force = false)
+        val onDevice = graph.providers.isOnDevice(settings)
+        WorkScheduler.enqueueProcess(
+            applicationContext, row.id, steps, force = false,
+            onDevice = onDevice, requireCharging = settings.onDeviceOnlyWhileCharging,
+        )
     }
 }
 

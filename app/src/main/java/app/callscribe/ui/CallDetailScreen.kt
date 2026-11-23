@@ -292,7 +292,7 @@ suspend fun processNow(ctx: android.content.Context, graph: AppGraph, r: Recordi
         if (graph.providers.analyzer(s)?.isConfigured() == true) add(ProcessWorker.STEP_ANALYZE)
     }
     graph.db.recordings().setStatus(r.id, Status.QUEUED)
-    WorkScheduler.enqueueProcess(ctx, r.id, steps, force = true)
+    WorkScheduler.enqueueProcess(ctx, r.id, steps, force = true, onDevice = graph.providers.isOnDevice(s))
 }
 
 @Composable

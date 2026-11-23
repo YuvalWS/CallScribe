@@ -68,7 +68,8 @@ class AudioCompressor(private val context: Context) {
         }
     }
 
-    private fun decodeToMono(uri: Uri, outRate: Int, sink: OutputStream): Long {
+    /** Decodes any recording to 16-bit LE mono PCM at [outRate]; returns the number of samples written. */
+    fun decodeToMono(uri: Uri, outRate: Int, sink: OutputStream): Long {
         val ex = MediaExtractor()
         ex.setDataSource(context, uri, null)
         val track = (0 until ex.trackCount).first {

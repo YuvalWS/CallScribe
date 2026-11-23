@@ -24,6 +24,9 @@ you configure it.
   confirm, or silently if you grant *Media management* access. Transcripts are kept by default; tick
   *Also delete transcript & summary* to expire text too (runs daily).
 - Long calls are compressed on the phone (16 kHz mono AAC) before upload.
+- **On-device transcription** (optional, free, offline): download ivrit.ai's Hebrew Zipformer (72 MB) in
+  Settings → Providers → *On this phone*. Runs with sherpa-onnx; ~25 s per minute of audio on a Galaxy S20 FE.
+  Automatic jobs can wait for the charger. Details: [docs/plans/on-device-transcription.md](docs/plans/on-device-transcription.md).
 - Recordings are identified by content hash, so renames / restores keep their transcripts.
 - Optional webhook export (e.g. to Home Assistant).
 - Optional **Google Drive backup** to your own Drive: transcripts, summaries, policies, settings and (opt-in)
@@ -93,6 +96,8 @@ Settings → Battery → Background usage limits → **Never sleeping apps** →
 
 ## Building
 Needs JDK 17+ and the Android SDK (platform 37). No Android Studio required.
+The first build downloads the prebuilt sherpa-onnx AAR (50 MB, SHA-256 pinned) from GitHub releases into the
+Gradle user home; no NDK is needed. The APK contains arm64-v8a native code only.
 
 ```bash
 ./gradlew :app:testDebugUnitTest      # unit tests

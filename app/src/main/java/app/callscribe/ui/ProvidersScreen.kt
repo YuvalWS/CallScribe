@@ -28,6 +28,7 @@ import app.callscribe.AppGraph
 import app.callscribe.data.AppSettings
 import app.callscribe.data.SecretStore
 import app.callscribe.providers.ProviderError
+import app.callscribe.providers.ondevice.OnDeviceTranscriber
 import kotlinx.coroutines.launch
 
 @Composable
@@ -42,7 +43,7 @@ fun ProvidersScreen(graph: AppGraph, onBack: () -> Unit) {
             style = MaterialTheme.typography.bodySmall,
         )
 
-        Section("Transcription — ivrit.ai on RunPod")
+        Section("Transcription")
         TranscriptionProviderFields(graph, st)
         HorizontalDivider()
 
@@ -51,31 +52,21 @@ fun ProvidersScreen(graph: AppGraph, onBack: () -> Unit) {
     }
 }
 
-/** RunPod endpoint fields + Save / Test connection. Shared by the Providers screen and onboarding. */
+/** Transcription choice (RunPod cloud / on this phone) + the chosen provider's fields. Shared by Providers and onboarding. */
 @Composable
 internal fun TranscriptionProviderFields(graph: AppGraph, st: AppSettings) {
     val scope = rememberCoroutineScope()
-    Text(
-        "Endpoint ID: the short ID of your RunPod serverless endpoint (Serverless → your endpoint; also in its URL " +
-            "api.runpod.ai/v2/<ID>/run). Deploy the ivrit-ai/runpod-serverless template with min workers 0.",
-        style = MaterialTheme.typography.bodySmall,
-    )
-    var endpoint by remember { mutableStateOf(st.runpodEndpointId) }
-    var model by remember { mutableStateOf(st.runpodModel) }
-    var price by remember { mutableStateOf(st.runpodPricePerSec.toBigDecimal().toPlainString()) }
-    Field("Endpoint ID", endpoint) { endpoint = it.trim() }
-    KeyField(graph, SecretStore.Key.RUNPOD_API_KEY, "RunPod API key")
-    Field("Model", model) { model = it.trim() }
-    Field("GPU price, USD per second (for cost estimates)", price, KeyboardType.Decimal) { price = it }
-    SwitchRow("Separate speakers (diarization, slower)", st.diarize) { v -> scope.launch { graph.settings.update { it.copy(diarize = v) } } }
-    SaveAndTest(
-        onSave = {
-            graph.settings.update {
-                it.copy(runpodEndpointId = endpoint, runpodModel = model, runpodPricePerSec = price.toDoubleOrNull() ?: it.runpodPricePerSec)
-            }
-        },
-        onTest = { graph.providers.transcriber(graph.settings.get())!!.test() },
-    )
+    listOf(
+        "ivrit-runpod" to "ivrit.ai on your RunPod endpoint (cloud, most accurate)",
+        OnDeviceTranscriber.ID to "On this phone (free, audio never leaves the phone)",
+    ).forEach { (id, label) ->
+        val pick = { scope.launch { graph.settings.update { it.copy(transcriberId = id) } } }
+        Row(Modifier.fillMaxWidth().clickable { pick() }, verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(st.transcriberId == id, { pick() })
+            Text(label)
+        }
+    }
+    if (st.transcriberId == OnDeviceTranscriber.ID) OnDeviceSection(graph, st) else RunPodSection(graph, st)
 }
 
 /** AI provider choice (Gemini / OpenRouter / Claude) + the chosen provider's fields. Shared with onboarding. */
@@ -99,6 +90,32 @@ internal fun AnalyzerProviderFields(graph: AppGraph, st: AppSettings) {
         "openrouter" -> OpenRouterSection(graph, st)
         "claude" -> ClaudeSection(graph, st)
     }
+}
+
+@Composable
+private fun RunPodSection(graph: AppGraph, st: AppSettings) {
+    val scope = rememberCoroutineScope()
+    Text(
+        "Endpoint ID: the short ID of your RunPod serverless endpoint (Serverless → your endpoint; also in its URL " +
+            "api.runpod.ai/v2/<ID>/run). Deploy the ivrit-ai/runpod-serverless template with min workers 0.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    var endpoint by remember { mutableStateOf(st.runpodEndpointId) }
+    var model by remember { mutableStateOf(st.runpodModel) }
+    var price by remember { mutableStateOf(st.runpodPricePerSec.toBigDecimal().toPlainString()) }
+    Field("Endpoint ID", endpoint) { endpoint = it.trim() }
+    KeyField(graph, SecretStore.Key.RUNPOD_API_KEY, "RunPod API key")
+    Field("Model", model) { model = it.trim() }
+    Field("GPU price, USD per second (for cost estimates)", price, KeyboardType.Decimal) { price = it }
+    SwitchRow("Separate speakers (diarization, slower)", st.diarize) { v -> scope.launch { graph.settings.update { it.copy(diarize = v) } } }
+    SaveAndTest(
+        onSave = {
+            graph.settings.update {
+                it.copy(runpodEndpointId = endpoint, runpodModel = model, runpodPricePerSec = price.toDoubleOrNull() ?: it.runpodPricePerSec)
+            }
+        },
+        onTest = { graph.providers.transcriber(graph.settings.get().copy(transcriberId = "ivrit-runpod"))!!.test() },
+    )
 }
 
 @Composable

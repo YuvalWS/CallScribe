@@ -55,6 +55,10 @@ data class AppSettings(
     val onboardingDone: Boolean = false,
     /** The user closed the "setup incomplete" banner on the call list. */
     val setupBannerDismissed: Boolean = false,
+    /** On-device transcription: CPU threads. 2 was fastest on a Galaxy S20 FE (1: 29 s, 2: 25 s, 4: 35 s per minute of audio). */
+    val onDeviceThreads: Int = 2,
+    /** On-device transcription of *automatic* jobs waits until the phone is charging (manual taps run at once). */
+    val onDeviceOnlyWhileCharging: Boolean = true,
 )
 
 class SettingsRepository(private val context: Context) {
@@ -87,6 +91,8 @@ class SettingsRepository(private val context: Context) {
         val autoEnabled = booleanPreferencesKey("auto_enabled")
         val onboardingDone = booleanPreferencesKey("onboarding_done")
         val bannerDismissed = booleanPreferencesKey("setup_banner_dismissed")
+        val odThreads = intPreferencesKey("ondevice_threads")
+        val odCharging = booleanPreferencesKey("ondevice_only_charging")
     }
 
     val flow: Flow<AppSettings> = context.dataStore.data.map { p -> p.toSettings() }
@@ -117,6 +123,8 @@ class SettingsRepository(private val context: Context) {
             // Installs from before onboarding existed already have saved settings: don't force them through it.
             onboardingDone = this[K.onboardingDone] ?: (this[K.transcriber] != null),
             setupBannerDismissed = this[K.bannerDismissed] ?: d.setupBannerDismissed,
+            onDeviceThreads = this[K.odThreads] ?: d.onDeviceThreads,
+            onDeviceOnlyWhileCharging = this[K.odCharging] ?: d.onDeviceOnlyWhileCharging,
         )
     }
 
@@ -143,6 +151,8 @@ class SettingsRepository(private val context: Context) {
             p[K.autoEnabled] = s.autoEnabled
             p[K.onboardingDone] = s.onboardingDone
             p[K.bannerDismissed] = s.setupBannerDismissed
+            p[K.odThreads] = s.onDeviceThreads
+            p[K.odCharging] = s.onDeviceOnlyWhileCharging
         }
     }
 }
