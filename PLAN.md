@@ -569,6 +569,8 @@ Built and verified on a Galaxy S20 FE (Android 13, One UI 5.1) with 372 real rec
 ---
 
 ## 6. Privacy & legal notes (put in README)
+- License: CallScribe's code is Apache-2.0 (`SPDX-License-Identifier: Apache-2.0`). Third-party components and
+  downloaded models keep their own licenses; see `THIRD_PARTY_NOTICES.md` (done 2026-11-23).
 - Audio and transcripts leave the phone (RunPod GPU worker you control; Anthropic API). Only the user's
   own keys are used; nothing is sent elsewhere.
 - In Israel, recording a call you take part in is generally permitted; the user is responsible for

@@ -164,3 +164,8 @@ Recordings stay on the phone unless a call is processed. Then the audio goes to 
 endpoint and the transcript to *your* AI provider. With Drive backup on, data (and recordings, if chosen) go to
 *your* Google Drive. No analytics, no crash reporting.
 Recording calls you take part in is legal in Israel; check the law where you live.
+
+## License
+CallScribe is free software, licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Yuval Weiss.
+The libraries it uses and the models you can download keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
