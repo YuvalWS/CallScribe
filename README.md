@@ -136,11 +136,11 @@ The repo ([YuvalWS/CallScribe](https://github.com/YuvalWS/CallScribe)) and its `
 exist. Run these from the repo root in PowerShell with the [GitHub CLI](https://cli.github.com)
 (`gh auth login` first).
 
-Create the release key once (with any JDK's `keytool`; `JAVA_HOME` points at your JDK), **outside the repo**, and back it up with its password (lose it and you
+Create the release key once (`keytool` ships with any JDK; if it isn't on your PATH, call it by its full path, e.g. `& "<JDK folder>\bin\keytool.exe"`), **outside the repo**, and back it up with its password (lose it and you
 can never ship an update to existing installs):
 
 ```powershell
-& "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -v -keystore "$HOME\callscribe-release.jks" -alias callscribe -keyalg RSA -keysize 4096 -validity 10000
+keytool -genkeypair -v -keystore "$HOME\callscribe-release.jks" -alias callscribe -keyalg RSA -keysize 4096 -validity 10000
 ```
 
 Add it as repository secrets (`gh secret set NAME` with no `--body` prompts for the value):

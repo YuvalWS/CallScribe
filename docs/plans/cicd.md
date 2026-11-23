@@ -130,9 +130,9 @@ Secrets in a public repo are safe: they are never shown in logs, and PRs from fo
 3. Make `dev` the default branch, so PRs target it by default (optional):
    `gh repo edit YuvalWS/CallScribe --default-branch dev`. If you do, the Gradle cache is still written
    by `dev` and `main` runs (configured explicitly in `ci.yml`).
-4. **Create the release keystore** (once, *outside* the repo; you will be asked for passwords and a name):
+4. **Create the release keystore** (once, *outside* the repo; you will be asked for passwords and a name): If `keytool` is not on your PATH, use its full path inside the JDK's `bin` folder.
    ```powershell
-   & "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -v -keystore "$HOME\callscribe-release.jks" -alias callscribe -keyalg RSA -keysize 4096 -validity 10000
+   keytool -genkeypair -v -keystore "$HOME\callscribe-release.jks" -alias callscribe -keyalg RSA -keysize 4096 -validity 10000
    ```
    Back up `callscribe-release.jks` and both passwords in a password manager.
 5. **Add the four secrets** (`gh secret set` without `--body` prompts, so passwords stay out of history):
