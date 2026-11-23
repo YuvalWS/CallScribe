@@ -8,7 +8,12 @@ import app.callscribe.data.PolicyEntity
 import app.callscribe.data.RecordingEntity
 import app.callscribe.rules.Retention
 import app.callscribe.rules.RetentionPlan
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
 import java.io.InputStream
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.time.ZoneId
 
 /** What the backup reads from the app. */
@@ -115,7 +120,10 @@ class DriveBackupEngine(
         }.sortedByDescending { it.lastBackupSec ?: 0 }
     }
 
-    /** [outOfTime] is checked between recordings; a long first audio backup continues in the next run. */
+    /**
+     * Uploads run [CALL_PARALLELISM] / [AUDIO_PARALLELISM] at a time. [outOfTime] is checked before each upload; when it
+     * fires the run stops early ([BackupReport.incomplete]) and the next run continues - nothing uploaded is lost.
+     */
     suspend fun backup(
         device: BackupDevice, source: BackupSource, includeAudio: Boolean, nowSec: Long, outOfTime: () -> Boolean = { false },
     ): BackupReport {
@@ -126,6 +134,7 @@ class DriveBackupEngine(
         val cloudAudioDue = plan.cloudAudio.mapTo(HashSet()) { it.contentHash }
         val cloudTextDue = plan.cloudText.mapTo(HashSet()) { it.contentHash }
 
+        val lock = Any()
         var failures = 0
         var lastError: String? = null
         suspend fun attempt(block: suspend () -> Unit): Boolean = try {
@@ -135,7 +144,8 @@ class DriveBackupEngine(
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            failures++; lastError = e.message ?: e.javaClass.simpleName; false
+            synchronized(lock) { failures++; lastError = e.message ?: e.javaClass.simpleName }
+            false
         }
 
         // Root files: settings, policies (only when changed), manifest.
@@ -149,19 +159,20 @@ class DriveBackupEngine(
         putSmall(BackupFormat.KIND_SETTINGS, "settings.json", BackupFormat.encodeSettings(source.settings()))
         putSmall(BackupFormat.KIND_POLICIES, "policies.json", BackupFormat.encodePolicies(policies))
 
-        // Calls.
+        // Calls: only new or changed ones.
         val callFiles = api.list(f.calls).filter { it.appProperties[KIND] == BackupFormat.KIND_CALL }
             .groupBy { it.appProperties[HASH] }.mapValues { it.value.first() }
-        var callsUploaded = 0
-        for (r in rows) {
+        val callsUploaded = AtomicInteger()
+        val pendingCalls = rows.mapNotNull { r ->
             val copy = if (r.contentHash in cloudTextDue) BackupFormat.withoutText(r) else r
             val bytes = BackupFormat.encodeCall(copy)
-            val sum = BackupFormat.sum(bytes)
             val existing = callFiles[r.contentHash]
-            if (existing?.appProperties?.get(SUM) == sum) continue
-            val props = mapOf(KIND to BackupFormat.KIND_CALL, HASH to r.contentHash, SUM to sum)
+            if (existing?.appProperties?.get(SUM) == BackupFormat.sum(bytes)) null else Triple(r, bytes, existing)
+        }
+        var incomplete = inParallel(pendingCalls, CALL_PARALLELISM, outOfTime) { (r, bytes, existing) ->
+            val props = mapOf(KIND to BackupFormat.KIND_CALL, HASH to r.contentHash, SUM to BackupFormat.sum(bytes))
             if (attempt { api.upload(f.calls, BackupFormat.callFileName(r, zone), props, UploadContent.Bytes(bytes), existing?.id) }) {
-                callsUploaded++
+                callsUploaded.incrementAndGet()
             }
         }
         val callsOnDrive = (callFiles.keys + rows.map { it.contentHash }).size
@@ -176,32 +187,45 @@ class DriveBackupEngine(
             for (file in files) if (!attempt { api.trash(file.id) }) all = false
             if (all) { trashed++; audioFiles.remove(hash) }
         }
-        var audioUploaded = 0
-        var audioBytes = 0L
-        var incomplete = false
-        if (includeAudio) {
-            for (r in rows) {
-                if (outOfTime()) { incomplete = true; break }
-                if (r.contentHash in cloudAudioDue || r.contentHash in audioFiles) continue
-                if (r.fileMissing || r.audioDeletedAt != null) continue
-                val content = source.openAudio(r) ?: continue
-                val name = BackupFormat.audioFileName(r)
+        val audioUploaded = AtomicInteger()
+        val audioBytes = AtomicLong()
+        if (includeAudio && !incomplete) {
+            val pending = rows.filter {
+                it.contentHash !in cloudAudioDue && it.contentHash !in audioFiles && !it.fileMissing && it.audioDeletedAt == null
+            }
+            incomplete = inParallel(pending, AUDIO_PARALLELISM, outOfTime) { r ->
+                val content = source.openAudio(r) ?: return@inParallel
                 val props = mapOf(KIND to BackupFormat.KIND_RECORDING, HASH to r.contentHash)
-                if (attempt { api.upload(f.audio, name, props, content) }) {
-                    audioUploaded++; audioBytes += content.length
-                    audioFiles[r.contentHash] = listOf(DriveFile("", name, props))
+                if (attempt { api.upload(f.audio, BackupFormat.audioFileName(r), props, content) }) {
+                    audioUploaded.incrementAndGet(); audioBytes.addAndGet(content.length)
                 }
             }
         }
+        val audioOnDrive = audioFiles.size + audioUploaded.get()
 
-        val report = BackupReport(callsUploaded, audioUploaded, audioBytes, trashed, callsOnDrive, audioFiles.size, failures, lastError)
-        val manifest = BackupFormat.Manifest(deviceName = device.name, backedUpAtSec = nowSec, calls = callsOnDrive, recordings = audioFiles.size)
+        val manifest = BackupFormat.Manifest(deviceName = device.name, backedUpAtSec = nowSec, calls = callsOnDrive, recordings = audioOnDrive)
         val existing = rootFiles.firstOrNull { it.appProperties[KIND] == BackupFormat.KIND_MANIFEST }
         attempt {
             api.upload(f.root, "manifest.json", mapOf(KIND to BackupFormat.KIND_MANIFEST), UploadContent.Bytes(BackupFormat.encodeManifest(manifest)), existing?.id)
         }
-        return report.copy(failures = failures, lastError = lastError, incomplete = incomplete)
+        return BackupReport(
+            callsUploaded.get(), audioUploaded.get(), audioBytes.get(), trashed, callsOnDrive, audioOnDrive,
+            failures, lastError, incomplete,
+        )
     }
+
+    /** Runs [block] for each item, at most [parallelism] at once. Returns true if [outOfTime] stopped it early. */
+    private suspend fun <T> inParallel(items: List<T>, parallelism: Int, outOfTime: () -> Boolean, block: suspend (T) -> Unit): Boolean =
+        coroutineScope {
+            val permits = Semaphore(parallelism)
+            var stopped = false
+            for (item in items) {
+                if (outOfTime()) { stopped = true; break }
+                permits.acquire()
+                launch { try { block(item) } finally { permits.release() } }
+            }
+            stopped
+        }
 
     /** Restores settings, policies and calls; audio is listed in [missingAudio] for an optional download. */
     suspend fun restore(sink: RestoreSink, backup: BackupInfo, nowMs: Long): RestoreReport {
@@ -241,6 +265,10 @@ class DriveBackupEngine(
     suspend fun download(a: CloudAudio, sink: (InputStream) -> Unit) = api.downloadTo(a.fileId, sink)
 
     companion object {
+        /** Small JSON uploads are latency-bound: a few at once makes a first backup of hundreds of calls fast. */
+        const val CALL_PARALLELISM = 6
+        const val AUDIO_PARALLELISM = 2
+
         /** Settings from the cloud, keeping what belongs to this phone. */
         fun restoredSettings(local: AppSettings, cloud: AppSettings) =
             cloud.copy(autoProcessFromSec = local.autoProcessFromSec, runpodBaseUrl = local.runpodBaseUrl)

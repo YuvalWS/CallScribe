@@ -214,8 +214,8 @@ class DriveBackupTest {
     @Test fun timeBudgetStopsAudioAndResumes() = runBlocking {
         val drive = FakeDriveApi()
         val src = Source((1..5).map { rec(it) })
-        var calls = 0
-        val r = DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, src, true, now) { ++calls > 2 }
+        var checks = 0 // checked once per call (5), then once per recording
+        val r = DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, src, true, now) { ++checks > 7 }
         assertTrue(r.incomplete)
         assertEquals(2, r.audioUploaded)
         assertEquals(5, r.callsUploaded)

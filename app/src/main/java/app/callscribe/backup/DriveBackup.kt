@@ -41,8 +41,11 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
         private const val NOW = "drive-backup-now"
         private const val NEXT = "drive-backup-next"
         private const val RESTORE = "drive-restore"
-        /** Stay well inside WorkManager's 10-minute execution limit; the rest continues in a follow-up job. */
-        private val BUDGET_MS = TimeUnit.MINUTES.toMillis(8)
+        /**
+         * Stay inside the job time limit: 10 minutes on stock Android, but Samsung was measured stopping this job after
+         * 5 minutes. The rest continues in a follow-up job.
+         */
+        private val BUDGET_MS = TimeUnit.MINUTES.toMillis(4)
     }
 
     val settings = BackupSettingsRepository(context)
@@ -131,13 +134,21 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
     private fun engine() = DriveBackupEngine(DriveRestApi(auth::token))
 
     /** [restoreFrom] null = back up; otherwise restore from that phone's backup. */
+    /** True while a backup or restore runs (for the "Backing up" status). */
+    val running = kotlinx.coroutines.flow.MutableStateFlow(false)
+
     suspend fun run(restoreFrom: BackupInfo?, downloadAudio: Boolean): ListenableWorker.Result = mutex.withLock {
+        running.value = true
+        try { runLocked(restoreFrom, downloadAudio) } finally { running.value = false }
+    }
+
+    private suspend fun runLocked(restoreFrom: BackupInfo?, downloadAudio: Boolean): ListenableWorker.Result {
         val restore = restoreFrom != null
         val s = settings.get()
         if (!restore && !s.enabled) return ListenableWorker.Result.success()
         val start = System.currentTimeMillis()
         settings.update { it.copy(lastAttemptMs = start) }
-        try {
+        return try {
             if (restore) {
                 val msg = doRestore(restoreFrom!!, downloadAudio)
                 settings.update { it.copy(lastResult = msg, needsSignIn = false) }

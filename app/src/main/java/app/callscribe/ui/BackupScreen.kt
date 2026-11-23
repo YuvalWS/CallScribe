@@ -54,7 +54,8 @@ fun BackupScreen(graph: AppGraph, onBack: () -> Unit, onPolicies: () -> Unit) {
         DriveBackupToggles(graph, st)
         if (!st.enabled) return@Page
 
-        Text(statusLine(st), style = MaterialTheme.typography.bodyMedium)
+        val running by drive.running.collectAsStateWithLifecycle()
+        Text(if (running) "Backing up to Google Drive\u2026" else statusLine(st), style = MaterialTheme.typography.bodyMedium)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { drive.backupNow() }) { Text("Back up now") }
             OutlinedButton(onClick = { confirmRestore = true }) { Text("Restore…") }

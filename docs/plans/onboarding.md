@@ -19,9 +19,10 @@ is: one enum entry + one `when` branch (the compiler flags the missing branch) +
 | 5 | **Transcription** — the same RunPod fields + Test connection as the Providers screen (shared composable `TranscriptionProviderFields`) | yes | transcriber `isConfigured()` |
 | 6 | **AI summary** — Gemini / OpenRouter / Claude radio + that provider's fields (shared composable `AnalyzerProviderFields`) | yes | analyzer `isConfigured()` |
 | 7 | **Starting policy** — two cards: "Automatically: unknown, private & spam callers" vs "Only when I tap Transcribe" | yes | always (preselected from current state) |
-| 8 | **Done** — checklist summary of the above, "Open my calls" | — | — |
+| 8 | **Back up to Google Drive** (optional) — one sentence + the same "Back up to Google Drive" / "Include recordings" switches as Settings → Google Drive backup (shared composable `DriveBackupToggles`); turning it on runs the Google sign-in | yes | Drive backup on (and not waiting for sign-in) |
+| 9 | **Done** — checklist summary of the above, "Open my calls" | — | — |
 
-Bottom bar on every step: Back · Skip (if skippable) · Next. A thin progress bar + "Step n of 8" on top.
+Bottom bar on every step: Back · Skip (if skippable) · Next. A thin progress bar + "Step n of 9" on top.
 
 ### Starting policy mapping (kept thin — policies are being redesigned elsewhere)
 Pure function `StartingPolicy.apply(choice, policies)` (unit-tested):

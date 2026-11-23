@@ -3,6 +3,15 @@
 Goal: back up CallScribe's own data — and optionally the recordings — to the **user's own Google Drive**, incrementally,
 and restore it on a new phone. No app servers; the user's Google account only. Off by default.
 
+## Folder layout — one folder per phone
+`CallScribe Backup/<device name>/` holds `settings.json`, `policies.json`, `manifest.json` and the subfolders
+`Calls/` and `Recordings/`. The phone folder is matched by `cs_device` = a random id created on first backup
+(stored in the `drive_backup` DataStore, excluded from Android backup), so a test phone and a daily phone on the same
+Google account never overwrite each other's settings/policies, and cloud retention only ever touches the phone's own
+folder. The folder name comes from Settings → About phone → Device name (`Settings.Global.DEVICE_NAME`).
+Restore lists every phone's backup (name, date, counts from its manifest) and restores the one the user picks; the
+restoring phone keeps backing up into its own new folder.
+
 ## What is backed up
 
 | Item | Drive file | When uploaded |
@@ -101,13 +110,11 @@ Settings → **Google Drive backup** (new screen `ui/BackupScreen.kt`):
 - Hint: per-group cloud retention lives in Policies; API keys never leave the phone.
 - Buttons: Back up now · Restore from Drive (+ checkbox) · Disconnect.
 
-## Onboarding
-Onboarding isn't on `main` yet (onboarding branch: `ui/SetupState.kt` enum `SetupStep`). Step to add at merge,
-between `POLICY` and `DONE`:
-`BACKUP("Back up to Google Drive")` — skippable, optional. Body: one sentence ("Keep transcripts, and optionally
-recordings, in your own Google Drive — API keys never leave the phone"), the same "Back up to Google Drive" switch +
-"Include recordings" switch as the backup screen (shared composable `DriveBackupToggles`), done when
-`driveEnabled`. `SetupStatus` gains `driveBackupOn: Boolean`; Done-step checklist shows it as optional.
+## Onboarding (done)
+Step `BACKUP("Back up to Google Drive?")` between `POLICY` and `DONE` — skippable, optional. Body: one sentence + the
+same "Back up to Google Drive" / "Include recordings" switches as the backup screen (shared composable
+`DriveBackupToggles`); done when backup is on and not waiting for sign-in (`SetupStatus.driveBackupOn`). The Done
+checklist shows it as optional; it is not in the "missing required" banner.
 
 ## Code
 - `backup/DriveApi.kt` — `DriveApi` interface + `DriveFile`, `UploadContent`.
