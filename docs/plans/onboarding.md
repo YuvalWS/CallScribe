@@ -4,7 +4,11 @@ Goal: a short, friendly setup flow on first launch that covers permissions, reco
 reliability, providers and a starting policy. Every step can be skipped except the audio permission
 step (the app is useless without it). Replaces the bare `PermissionGate` in `ui/MainActivity.kt`.
 
-## Steps (`ui/Onboarding.kt`, enum `SetupStep`)
+## Steps (registry: enum `SetupStep` in `ui/SetupState.kt`, UI in `SetupStep.ui()` in `ui/Onboarding.kt`)
+
+The step order is the declaration order of `SetupStep`; each entry carries its heading, whether it can be skipped
+and when it counts as done. Its icon and body live in one exhaustive `when` (`SetupStep.ui()`), so adding a step
+is: one enum entry + one `when` branch (the compiler flags the missing branch) + a row in the table below.
 
 | # | Step | Skippable | "Done" when (live, re-checked on resume) |
 |---|------|-----------|-------------------------------------------|
@@ -44,6 +48,15 @@ Pure function `StartingPolicy.apply(choice, policies)` (unit-tested):
   something required is missing.
 - Debug builds: `adb shell am broadcast -n app.callscribe/.debug.DebugReceiver -a app.callscribe.DEBUG_ONBOARDING`
   sets `onboardingDone = false` (forces the flow without clearing data).
+
+## Keeping onboarding current (rule for every change)
+Any change that **adds or changes a runtime permission, a provider, a setting the user must configure, or a policy
+default** must, in the same change:
+- update the flow — `SetupStep` (+ `SetupStatus` if it needs a new fact) in `ui/SetupState.kt`, `SetupStep.ui()` and
+  the step composables in `ui/Onboarding.kt`, the shared provider composables `TranscriptionProviderFields` /
+  `AnalyzerProviderFields` in `ui/ProvidersScreen.kt`, and `StartingPolicy` for policy defaults;
+- update `SetupStateTest` and this document;
+- say in the final report what changed in onboarding, or why nothing was needed.
 
 ## Out of scope
 Localised (Hebrew) strings — the app UI is English today; the layout uses start/end so it mirrors correctly in RTL.

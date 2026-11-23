@@ -69,6 +69,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
+import app.callscribe.data.AppSettings
 import app.callscribe.detect.WorkScheduler
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -181,51 +182,36 @@ fun OnboardingScreen(graph: AppGraph, start: SetupStep, onExit: (() -> Unit)?, o
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             if (st == null || s == null) return@Column
-            Icon(step.icon(), null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
-            Text(step.heading(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            when (step) {
-                SetupStep.WELCOME -> WelcomeStep()
-                SetupStep.PERMISSIONS -> PermissionsStep(st)
-                SetupStep.RECORDING -> RecordingStep(st)
-                SetupStep.BACKGROUND -> BackgroundStep(st)
-                SetupStep.TRANSCRIPTION -> {
-                    Body("Transcripts are made by an ivrit.ai Hebrew model running on your own RunPod endpoint. You pay RunPod directly — about $0.003 for a 14-minute call. Setup takes ~5 minutes; see the README for step-by-step instructions.")
-                    Body("You can skip this and set it up later in Settings → Providers. Until then CallScribe works as a recordings browser.")
-                    StatusLine(st.transcriberConfigured, "Transcription is set up", "Not set up yet")
-                    TranscriptionProviderFields(graph, s)
-                }
-                SetupStep.ANALYSIS -> {
-                    Body("Optional: an AI model reads each transcript and writes a short summary plus a spam / not-spam verdict. Pick a provider and paste your own key. Test connection is free.")
-                    StatusLine(st.analyzerConfigured, "AI summary is set up", "Not set up yet")
-                    AnalyzerProviderFields(graph, s)
-                }
-                SetupStep.POLICY -> PolicyStep(graph, s.autoEnabled)
-                SetupStep.DONE -> DoneStep(st)
-            }
+            val ui = step.ui()
+            Icon(ui.icon, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+            Text(step.heading, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+            ui.body(StepContext(graph, st, s))
         }
     }
 }
 
-private fun SetupStep.icon(): ImageVector = when (this) {
-    SetupStep.WELCOME -> Icons.Default.Lock
-    SetupStep.PERMISSIONS -> Icons.Default.LibraryMusic
-    SetupStep.RECORDING -> Icons.Default.Call
-    SetupStep.BACKGROUND -> Icons.Default.BatteryFull
-    SetupStep.TRANSCRIPTION -> Icons.Default.Subtitles
-    SetupStep.ANALYSIS -> Icons.Default.AutoAwesome
-    SetupStep.POLICY -> Icons.Default.Tune
-    SetupStep.DONE -> Icons.Default.CheckCircle
-}
+private class StepContext(val graph: AppGraph, val status: SetupStatus, val settings: AppSettings)
+private class StepUi(val icon: ImageVector, val body: @Composable (StepContext) -> Unit)
 
-private fun SetupStep.heading() = when (this) {
-    SetupStep.WELCOME -> "Welcome to CallScribe"
-    SetupStep.PERMISSIONS -> "Let CallScribe see your call recordings"
-    SetupStep.RECORDING -> "Is call recording on?"
-    SetupStep.BACKGROUND -> "Keep CallScribe awake"
-    SetupStep.TRANSCRIPTION -> "Set up transcription"
-    SetupStep.ANALYSIS -> "AI summary & spam check"
-    SetupStep.POLICY -> "What should happen to new calls?"
-    SetupStep.DONE -> "You're all set"
+/** Icon + body of each step. Exhaustive on purpose: adding a [SetupStep] fails to compile until it has a UI here. */
+private fun SetupStep.ui(): StepUi = when (this) {
+    SetupStep.WELCOME -> StepUi(Icons.Default.Lock) { WelcomeStep() }
+    SetupStep.PERMISSIONS -> StepUi(Icons.Default.LibraryMusic) { PermissionsStep(it.status) }
+    SetupStep.RECORDING -> StepUi(Icons.Default.Call) { RecordingStep(it.status) }
+    SetupStep.BACKGROUND -> StepUi(Icons.Default.BatteryFull) { BackgroundStep(it.status) }
+    SetupStep.TRANSCRIPTION -> StepUi(Icons.Default.Subtitles) { c ->
+        Body("Transcripts are made by an ivrit.ai Hebrew model running on your own RunPod endpoint. You pay RunPod directly — about $0.003 for a 14-minute call. Setup takes ~5 minutes; see the README for step-by-step instructions.")
+        Body("You can skip this and set it up later in Settings → Providers. Until then CallScribe works as a recordings browser.")
+        StatusLine(c.status.transcriberConfigured, "Transcription is set up", "Not set up yet")
+        TranscriptionProviderFields(c.graph, c.settings)
+    }
+    SetupStep.ANALYSIS -> StepUi(Icons.Default.AutoAwesome) { c ->
+        Body("Optional: an AI model reads each transcript and writes a short summary plus a spam / not-spam verdict. Pick a provider and paste your own key. Test connection is free.")
+        StatusLine(c.status.analyzerConfigured, "AI summary is set up", "Not set up yet")
+        AnalyzerProviderFields(c.graph, c.settings)
+    }
+    SetupStep.POLICY -> StepUi(Icons.Default.Tune) { PolicyStep(it.graph, it.settings.autoEnabled) }
+    SetupStep.DONE -> StepUi(Icons.Default.CheckCircle) { DoneStep(it.status) }
 }
 
 @Composable

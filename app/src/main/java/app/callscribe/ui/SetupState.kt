@@ -3,16 +3,20 @@ package app.callscribe.ui
 import app.callscribe.data.LabelKind
 import app.callscribe.data.PolicyEntity
 
-/** Onboarding steps, in order. Only [PERMISSIONS] cannot be skipped. See docs/plans/onboarding.md. */
-enum class SetupStep(val title: String, val skippable: Boolean = true) {
-    WELCOME("Welcome"),
-    PERMISSIONS("Access to recordings", skippable = false),
-    RECORDING("Call recording"),
-    BACKGROUND("Background"),
-    TRANSCRIPTION("Transcription"),
-    ANALYSIS("AI summary"),
-    POLICY("Automatic processing"),
-    DONE("All set"),
+/**
+ * The onboarding flow, as one ordered registry: steps run in declaration order. To add a step, add an entry here
+ * (heading, skippable, when it counts as done) and its icon + body in `SetupStep.ui()` in Onboarding.kt — the
+ * compiler flags that `when` until you do. Keep docs/plans/onboarding.md in sync. Only [PERMISSIONS] is mandatory.
+ */
+enum class SetupStep(val heading: String, val skippable: Boolean = true, val isDone: (SetupStatus) -> Boolean = { true }) {
+    WELCOME("Welcome to CallScribe"),
+    PERMISSIONS("Let CallScribe see your call recordings", skippable = false, isDone = { it.audioGranted && it.notificationsGranted }),
+    RECORDING("Is call recording on?", isDone = { it.recordingCount > 0 }),
+    BACKGROUND("Keep CallScribe awake", isDone = { it.batteryUnrestricted }),
+    TRANSCRIPTION("Set up transcription", isDone = { it.transcriberConfigured }),
+    ANALYSIS("AI summary & spam check", isDone = { it.analyzerConfigured }),
+    POLICY("What should happen to new calls?"),
+    DONE("You're all set"),
 }
 
 /** Live facts about the device and settings. Pure — unit-tested. */
@@ -24,14 +28,7 @@ data class SetupStatus(
     val transcriberConfigured: Boolean,
     val analyzerConfigured: Boolean,
 ) {
-    fun isDone(step: SetupStep): Boolean = when (step) {
-        SetupStep.WELCOME, SetupStep.POLICY, SetupStep.DONE -> true
-        SetupStep.PERMISSIONS -> audioGranted && notificationsGranted
-        SetupStep.RECORDING -> recordingCount > 0
-        SetupStep.BACKGROUND -> batteryUnrestricted
-        SetupStep.TRANSCRIPTION -> transcriberConfigured
-        SetupStep.ANALYSIS -> analyzerConfigured
-    }
+    fun isDone(step: SetupStep): Boolean = step.isDone(this)
 
     /** Can the user leave this step with Next? Audio access is the one hard requirement. */
     fun canContinue(step: SetupStep): Boolean = step != SetupStep.PERMISSIONS || audioGranted
