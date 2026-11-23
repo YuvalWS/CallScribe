@@ -54,14 +54,21 @@ data class BackupReport(
     }
 }
 
+/** This phone, as its backup folder knows it. [id] is random per install, [name] e.g. "Galaxy S20 FE". */
+data class BackupDevice(val id: String, val name: String)
+
+/** One phone's backup in the user's Drive. */
+data class BackupInfo(val folderId: String, val deviceId: String, val name: String, val lastBackupSec: Long?, val calls: Int?, val recordings: Int?)
+
 data class RestoreReport(val inserted: Int, val merged: Int, val policies: Int, val settings: Boolean, val audioAvailable: Int)
 
 /** A recording on Drive whose audio isn't on this phone. */
 data class CloudAudio(val fileId: String, val name: String, val hash: String, val size: Long?)
 
 /**
- * Incremental, stateless backup to a visible "CallScribe Backup" folder: the Drive listing is compared with the DB on
- * every run (files are matched by their cs_hash / cs_sum app properties). Pure Kotlin — tested with a fake [DriveApi].
+ * Incremental, stateless backup to a visible "CallScribe Backup/<device name>" folder — one folder per phone, so two
+ * phones on one Google account never mix. The Drive listing is compared with the DB on every run (files are matched by
+ * their cs_hash / cs_sum app properties). Pure Kotlin — tested with a fake [DriveApi].
  */
 class DriveBackupEngine(
     private val api: DriveApi,
@@ -69,20 +76,50 @@ class DriveBackupEngine(
     /** The pure retention planner; tests inject cloud periods through it. */
     private val planner: (List<RecordingEntity>, List<PolicyEntity>, Long) -> RetentionPlan = { r, p, now -> Retention.plan(r, p, now) },
 ) {
+    /** [root] is this phone's folder (settings, policies, manifest); calls and recordings are its subfolders. */
     data class Folders(val root: String, val calls: String, val audio: String)
 
-    /** Finds the backup folders, creating them if [create]. Null when absent and not created. */
-    suspend fun folders(create: Boolean): Folders? {
-        val root = api.findFolders(KIND, BackupFormat.KIND_ROOT).firstOrNull()?.id
-            ?: if (create) api.createFolder(BackupFormat.ROOT_NAME, null, mapOf(KIND to BackupFormat.KIND_ROOT)).id else return null
-        suspend fun sub(kind: String, name: String) = api.findFolders(KIND, kind, root).firstOrNull()?.id
-            ?: api.createFolder(name, root, mapOf(KIND to kind)).id
-        return Folders(root, sub(BackupFormat.KIND_CALLS, BackupFormat.CALLS_NAME), sub(BackupFormat.KIND_AUDIO, BackupFormat.AUDIO_NAME))
+    private suspend fun topFolder(create: Boolean): String? =
+        api.findFolders(KIND, BackupFormat.KIND_ROOT).firstOrNull()?.id
+            ?: if (create) api.createFolder(BackupFormat.ROOT_NAME, null, mapOf(KIND to BackupFormat.KIND_ROOT)).id else null
+
+    private suspend fun subFolders(deviceFolder: String, create: Boolean): Folders? {
+        suspend fun sub(kind: String, name: String) = api.findFolders(KIND, kind, deviceFolder).firstOrNull()?.id
+            ?: if (create) api.createFolder(name, deviceFolder, mapOf(KIND to kind)).id else null
+        return Folders(
+            deviceFolder,
+            sub(BackupFormat.KIND_CALLS, BackupFormat.CALLS_NAME) ?: return null,
+            sub(BackupFormat.KIND_AUDIO, BackupFormat.AUDIO_NAME) ?: return null,
+        )
+    }
+
+    /** This phone's backup folders, created on first use. */
+    suspend fun folders(device: BackupDevice): Folders {
+        val top = topFolder(create = true)!!
+        val dev = api.findFolders(KIND, BackupFormat.KIND_DEVICE, top).firstOrNull { it.appProperties[BackupFormat.DEVICE] == device.id }?.id
+            ?: api.createFolder(
+                BackupFormat.deviceFolderName(device.name), top,
+                mapOf(KIND to BackupFormat.KIND_DEVICE, BackupFormat.DEVICE to device.id),
+            ).id
+        return subFolders(dev, create = true)!!
+    }
+
+    /** All phones' backups in this Google account, most recent first. */
+    suspend fun backups(): List<BackupInfo> {
+        val top = topFolder(create = false) ?: return emptyList()
+        return api.findFolders(KIND, BackupFormat.KIND_DEVICE, top).map { dev ->
+            val manifest = api.list(dev.id).firstOrNull { it.appProperties[KIND] == BackupFormat.KIND_MANIFEST }
+                ?.let { runCatching { BackupFormat.decodeManifest(api.download(it.id)) }.getOrNull() }
+            BackupInfo(dev.id, dev.appProperties[BackupFormat.DEVICE].orEmpty(), manifest?.deviceName ?: dev.name,
+                manifest?.backedUpAtSec, manifest?.calls, manifest?.recordings)
+        }.sortedByDescending { it.lastBackupSec ?: 0 }
     }
 
     /** [outOfTime] is checked between recordings; a long first audio backup continues in the next run. */
-    suspend fun backup(source: BackupSource, includeAudio: Boolean, nowSec: Long, outOfTime: () -> Boolean = { false }): BackupReport {
-        val f = folders(create = true)!!
+    suspend fun backup(
+        device: BackupDevice, source: BackupSource, includeAudio: Boolean, nowSec: Long, outOfTime: () -> Boolean = { false },
+    ): BackupReport {
+        val f = folders(device)
         val rows = source.recordings()
         val policies = source.policies()
         val plan = planner(rows, policies, nowSec)
@@ -158,7 +195,7 @@ class DriveBackupEngine(
         }
 
         val report = BackupReport(callsUploaded, audioUploaded, audioBytes, trashed, callsOnDrive, audioFiles.size, failures, lastError)
-        val manifest = BackupFormat.Manifest(backedUpAtSec = nowSec, calls = callsOnDrive, recordings = audioFiles.size)
+        val manifest = BackupFormat.Manifest(deviceName = device.name, backedUpAtSec = nowSec, calls = callsOnDrive, recordings = audioFiles.size)
         val existing = rootFiles.firstOrNull { it.appProperties[KIND] == BackupFormat.KIND_MANIFEST }
         attempt {
             api.upload(f.root, "manifest.json", mapOf(KIND to BackupFormat.KIND_MANIFEST), UploadContent.Bytes(BackupFormat.encodeManifest(manifest)), existing?.id)
@@ -167,8 +204,8 @@ class DriveBackupEngine(
     }
 
     /** Restores settings, policies and calls; audio is listed in [missingAudio] for an optional download. */
-    suspend fun restore(sink: RestoreSink, nowMs: Long): RestoreReport {
-        val f = folders(create = false) ?: throw IllegalStateException("No CallScribe backup found in this Google account")
+    suspend fun restore(sink: RestoreSink, backup: BackupInfo, nowMs: Long): RestoreReport {
+        val f = subFolders(backup.folderId, create = false) ?: throw IllegalStateException("The backup of ${backup.name} is incomplete")
         val rootFiles = api.list(f.root)
         var settings = false
         rootFiles.firstOrNull { it.appProperties[KIND] == BackupFormat.KIND_SETTINGS }?.let {
@@ -192,8 +229,8 @@ class DriveBackupEngine(
     }
 
     /** Recordings on Drive for calls whose audio isn't on this phone. */
-    suspend fun missingAudio(rows: List<RecordingEntity>): List<CloudAudio> {
-        val f = folders(create = false) ?: return emptyList()
+    suspend fun missingAudio(rows: List<RecordingEntity>, backup: BackupInfo): List<CloudAudio> {
+        val f = subFolders(backup.folderId, create = false) ?: return emptyList()
         val missing = rows.filter { it.fileMissing }.mapTo(HashSet()) { it.contentHash }
         return api.list(f.audio)
             .filter { it.appProperties[KIND] == BackupFormat.KIND_RECORDING && it.appProperties[HASH] in missing }

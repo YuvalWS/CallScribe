@@ -20,7 +20,9 @@ object BackupFormat {
     const val KIND = "cs_kind"
     const val HASH = "cs_hash"
     const val SUM = "cs_sum"
+    const val DEVICE = "cs_device"
     const val KIND_ROOT = "root"
+    const val KIND_DEVICE = "device"
     const val KIND_CALLS = "calls"
     const val KIND_AUDIO = "audio"
     const val KIND_CALL = "call"
@@ -36,7 +38,10 @@ object BackupFormat {
     val json = Json { encodeDefaults = true; ignoreUnknownKeys = true; explicitNulls = false }
 
     @Serializable
-    data class Manifest(val format: Int = VERSION, val app: String = "CallScribe", val backedUpAtSec: Long, val calls: Int, val recordings: Int)
+    data class Manifest(
+        val format: Int = VERSION, val app: String = "CallScribe", val deviceName: String = "",
+        val backedUpAtSec: Long, val calls: Int, val recordings: Int,
+    )
 
     /** Device-specific fields are blanked so the same call backs up identically from any phone. */
     fun normalize(r: RecordingEntity) = r.copy(id = 0, mediaId = 0, uri = "", fileMissing = false, updatedAt = 0)
@@ -60,6 +65,9 @@ object BackupFormat {
     fun decodeSettings(bytes: ByteArray): AppSettings = json.decodeFromString(AppSettings.serializer(), bytes.decodeToString())
 
     fun encodeManifest(m: Manifest): ByteArray = json.encodeToString(Manifest.serializer(), m).toByteArray()
+    fun decodeManifest(bytes: ByteArray): Manifest = json.decodeFromString(Manifest.serializer(), bytes.decodeToString())
+
+    fun deviceFolderName(deviceName: String) = safe(deviceName).ifBlank { "Phone" }
 
     /** Content fingerprint stored in appProperties: upload only when it changes. */
     fun sum(bytes: ByteArray): String =

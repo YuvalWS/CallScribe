@@ -23,6 +23,8 @@ data class DriveBackupSettings(
     val lastResult: String = "",
     /** Google needs the user (access revoked / expired): background runs stop until they reconnect. */
     val needsSignIn: Boolean = false,
+    /** Random per install; names this phone's folder in the backup. Not restored to other phones (excluded from Android backup). */
+    val deviceId: String = "",
 )
 
 class BackupSettingsRepository(private val context: Context) {
@@ -35,6 +37,7 @@ class BackupSettingsRepository(private val context: Context) {
         val attempt = longPreferencesKey("last_attempt_ms")
         val result = stringPreferencesKey("last_result")
         val signIn = booleanPreferencesKey("needs_sign_in")
+        val device = stringPreferencesKey("device_id")
     }
 
     val flow: Flow<DriveBackupSettings> = context.backupStore.data.map { p ->
@@ -48,6 +51,7 @@ class BackupSettingsRepository(private val context: Context) {
             lastAttemptMs = p[K.attempt] ?: d.lastAttemptMs,
             lastResult = p[K.result] ?: d.lastResult,
             needsSignIn = p[K.signIn] ?: d.needsSignIn,
+            deviceId = p[K.device] ?: d.deviceId,
         )
     }
 
@@ -57,7 +61,7 @@ class BackupSettingsRepository(private val context: Context) {
         context.backupStore.edit { p ->
             val cur = DriveBackupSettings(
                 p[K.enabled] ?: false, p[K.audio] ?: false, p[K.wifi] ?: true, p[K.charging] ?: false,
-                p[K.success] ?: 0, p[K.attempt] ?: 0, p[K.result] ?: "", p[K.signIn] ?: false,
+                p[K.success] ?: 0, p[K.attempt] ?: 0, p[K.result] ?: "", p[K.signIn] ?: false, p[K.device] ?: "",
             )
             val s = transform(cur)
             p[K.enabled] = s.enabled
@@ -68,6 +72,7 @@ class BackupSettingsRepository(private val context: Context) {
             p[K.attempt] = s.lastAttemptMs
             p[K.result] = s.lastResult
             p[K.signIn] = s.needsSignIn
+            p[K.device] = s.deviceId
         }
     }
 }
