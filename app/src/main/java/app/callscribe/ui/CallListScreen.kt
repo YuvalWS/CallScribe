@@ -13,6 +13,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -146,6 +148,7 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                     CallRow(
                         r,
                         onClick = { onOpen(r.id) },
+                        onToggleKeep = { scope.launch { graph.db.recordings().setKeepForever(r.id, !r.keepForever) } },
                         onProcess = { if (ready) scope.launch { processNow(ctx, graph, r) } else onSetup() },
                     )
                     HorizontalDivider()
@@ -156,7 +159,7 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
 }
 
 @Composable
-private fun CallRow(r: RecordingEntity, onClick: () -> Unit, onProcess: () -> Unit) {
+private fun CallRow(r: RecordingEntity, onClick: () -> Unit, onToggleKeep: () -> Unit, onProcess: () -> Unit) {
     val busy = r.status in setOf(Status.QUEUED, Status.TRANSCRIBING, Status.ANALYZING)
     Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
@@ -184,6 +187,10 @@ private fun CallRow(r: RecordingEntity, onClick: () -> Unit, onProcess: () -> Un
             }
             val line = r.callerIntent ?: r.summary ?: r.transcriptText ?: (if (r.status == Status.FAILED) r.error else null)
             if (line != null) Text(line, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+        }
+        IconButton(onClick = onToggleKeep, modifier = Modifier.semantics { contentDescription = if (r.keepForever) "Kept forever" else "Keep forever" }) {
+            Icon(if (r.keepForever) Icons.Default.Bookmark else Icons.Default.BookmarkBorder, null,
+                tint = if (r.keepForever) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
         }
         when {
             busy -> CircularProgressIndicator(Modifier.padding(12.dp).size(24.dp), strokeWidth = 2.dp)

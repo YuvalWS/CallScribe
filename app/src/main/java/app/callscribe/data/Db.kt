@@ -42,6 +42,9 @@ interface RecordingDao {
     @Query("UPDATE recordings SET status = :status, error = :error, updatedAt = :now WHERE id = :id")
     suspend fun setStatus(id: Long, status: Status, error: String? = null, now: Long = System.currentTimeMillis())
 
+    @Query("UPDATE recordings SET keepForever = :keep WHERE id = :id")
+    suspend fun setKeepForever(id: Long, keep: Boolean)
+
     @Query("DELETE FROM recordings WHERE fileMissing = 1")
     suspend fun deleteMissing(): Int
 }
@@ -71,7 +74,7 @@ interface PolicyDao {
     }
 }
 
-@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 2, exportSchema = true)
+@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 3, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun recordings(): RecordingDao
     abstract fun policies(): PolicyDao
@@ -96,9 +99,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v2 → v3: per-call "keep forever" flag. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE recordings ADD COLUMN keepForever INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "callscribe.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

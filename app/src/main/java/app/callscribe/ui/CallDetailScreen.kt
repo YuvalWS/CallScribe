@@ -14,7 +14,11 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -88,6 +92,20 @@ fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () 
         ) {
             Text("${Fmt.time(rec.callTimeSec)} · ${Fmt.duration(rec.durationMs)} · ${rec.samsungLabel ?: Fmt.label(rec.labelKind)}")
             Text(rec.displayName, style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                IconButton(
+                    onClick = { scope.launch { graph.db.recordings().setKeepForever(rec.id, !rec.keepForever) } },
+                    modifier = androidx.compose.ui.Modifier.semantics { contentDescription = if (rec.keepForever) "Kept forever" else "Keep forever" },
+                ) {
+                    Icon(if (rec.keepForever) Icons.Default.Bookmark else Icons.Default.BookmarkBorder, null,
+                        tint = if (rec.keepForever) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(
+                    if (rec.keepForever) "Kept forever — retention policies never delete this call's audio or transcript."
+                    else "Keep forever: protect this call from retention policies.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
             if (!rec.fileMissing) AudioPlayer(rec.uri)
 
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

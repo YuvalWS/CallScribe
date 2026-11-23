@@ -136,6 +136,20 @@ class RetentionTest {
         )
         assertEquals(listOf(2L), Retention.plan(rows, listOf(group, keepMom), now).trashAudio.map { it.id })
     }
+
+    @Test fun keepForeverBlocksAudioAndTextDeletion() {
+        val spam = PolicyEntity.defaultFor(LabelKind.SPAM).copy(audioRetentionDays = 7, textRetentionDays = 7)
+        val kept = rec(1, LabelKind.SPAM, 400, "t").copy(keepForever = true)
+        assertTrue(Retention.plan(listOf(kept), listOf(spam), now).isEmpty)
+    }
+
+    @Test fun keepForeverOnlyAffectsFlaggedRows() {
+        val spam = PolicyEntity.defaultFor(LabelKind.SPAM).copy(audioRetentionDays = 7, textRetentionDays = 7)
+        val rows = listOf(rec(1, LabelKind.SPAM, 400, "t").copy(keepForever = true), rec(2, LabelKind.SPAM, 400, "t"))
+        val plan = Retention.plan(rows, listOf(spam), now)
+        assertEquals(listOf(2L), plan.trashAudio.map { it.id })
+        assertEquals(listOf(2L), plan.deleteText.map { it.id })
+    }
 }
 
 class SearchTest {

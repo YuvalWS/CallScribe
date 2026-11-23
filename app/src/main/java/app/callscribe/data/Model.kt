@@ -62,6 +62,8 @@ data class RecordingEntity(
     val audioDeletedAt: Long? = null,
     /** Set when the retention policy deleted transcript + analysis. */
     val textDeletedAt: Long? = null,
+    /** User flag: retention never touches this call (audio or text). */
+    val keepForever: Boolean = false,
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     val totalCostUsd: Double get() = (transcriptionCostUsd ?: 0.0) + (analysisCostUsd ?: 0.0)

@@ -52,6 +52,7 @@ object Retention {
         val audio = mutableListOf<RecordingEntity>()
         val text = mutableListOf<RecordingEntity>()
         for (r in rows) {
+            if (r.keepForever) continue
             val p = PolicyResolver.resolve(r, policies)
             val age = nowSec - r.callTimeSec
             if (p.audioRetentionDays >= 0 && !r.fileMissing && r.audioDeletedAt == null && age > p.audioRetentionDays * DAY) {
