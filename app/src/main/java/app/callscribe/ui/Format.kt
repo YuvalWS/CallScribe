@@ -52,7 +52,9 @@ fun SmallChip(text: String, color: Color? = null) {
     AssistChip(
         onClick = {},
         label = { Text(text) },
-        colors = if (color != null) AssistChipDefaults.assistChipColors(containerColor = color) else AssistChipDefaults.assistChipColors(),
+        // Light tinted chips need dark text in both themes.
+        colors = if (color != null) AssistChipDefaults.assistChipColors(containerColor = color, labelColor = Color(0xFF1C1B1F))
+        else AssistChipDefaults.assistChipColors(),
     )
 }
 

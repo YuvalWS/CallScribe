@@ -2,20 +2,24 @@
 
 A free, open-source **call transcription manager** for Samsung phones. It lists the call recordings
 your phone already saves (including calls answered by Samsung's call screening), transcribes them in
-Hebrew with [ivrit.ai](https://huggingface.co/ivrit-ai) models, and can ask Claude for a short summary
-and a spam / not-spam verdict.
+Hebrew with [ivrit.ai](https://huggingface.co/ivrit-ai) models, and can ask an AI model (Gemini,
+any OpenRouter model, or Claude) for a short summary and a spam / not-spam verdict.
 
 **Bring your own services.** CallScribe has no servers. Audio goes only to the RunPod endpoint you
-deploy, and transcripts only to your own Anthropic account. You pay those providers directly
+deploy, and transcripts only to the AI provider account you choose. You pay those providers directly
 (typically a fraction of a cent per call). Nothing is hard-coded and nothing is sent anywhere until
 you configure it.
 
 ## Features
 - Call list of every recording in `Recordings/Call`, with Samsung's caller-ID label (Suspected Spam,
   Potential Fraud, …), filters, and per-call + total cost.
-- **Transcribe** / **Analyze** buttons on any call.
-- **Automatic processing** of new calls: off, all, or by caller type (spam, fraud, unknown, private,
-  contacts), plus *Always process* / *Never process* contact lists (the exclude list always wins).
+- **Search** by name, number (any format) or words in transcripts and summaries.
+- **Transcribe** button on every row and on the call page; **Analyze** for the AI summary.
+- **Policies** per caller type (spam, fraud, other labels, unknown, private, contacts) and per contact:
+  transcribe automatically? summarize? how long to keep the recording? A contact's policy overrides its group.
+- **Retention**: recordings past their period are moved to the system trash (recoverable 30 days) after you
+  confirm, or silently if you grant *Media management* access. Transcripts are kept by default; tick
+  *Also delete transcript & summary* to expire text too (runs daily).
 - Long calls are compressed on the phone (16 kHz mono AAC) before upload.
 - Recordings are identified by content hash, so renames / restores keep their transcripts.
 - Optional webhook export (e.g. to Home Assistant).
@@ -41,9 +45,14 @@ you configure it.
 Measured on a real endpoint: a 14-minute call took 14 s of GPU time ≈ **$0.003**; cold starts add
 ~10–20 s of waiting.
 
-### 2. AI summary (optional)
-Paste an Anthropic API key in Settings → Providers and pick a model. Haiku is cheapest
-(≈ $0.001 per call); Opus is the most capable (≈ $0.01–0.02 per call).
+### 2. AI summary (optional) — pick one provider in Settings → Providers
+- **Gemini** (aistudio.google.com key). Free tier: ~15 requests/minute, spaced automatically. Default model
+  `gemini-3.5-flash-lite`. Note: on the free tier Google may use prompts (your transcripts) to improve its products.
+- **OpenRouter** (openrouter.ai key, pay per request; exact cost recorded per call). Default
+  `anthropic/claude-haiku-5.5` ≈ $0.0003 per call (measured).
+- **Claude** (console.anthropic.com key).
+
+"Test connection" is free for every provider.
 
 ### 3. Background reliability (Samsung)
 Settings → Battery → Background usage limits → **Never sleeping apps** → add CallScribe.

@@ -1,23 +1,8 @@
 package app.callscribe.rules
 
-import app.callscribe.data.ContactRuleEntity
 import app.callscribe.data.LabelKind
-import app.callscribe.data.RuleMode
-import app.callscribe.detect.ParsedName
-
-enum class AutoMode { OFF, ALL, CUSTOM }
-
-data class AutoRules(
-    val mode: AutoMode = AutoMode.CUSTOM,
-    val spam: Boolean = true,
-    val fraud: Boolean = true,
-    val otherLabels: Boolean = true,
-    val unknownNumbers: Boolean = true,
-    val privateNumbers: Boolean = true,
-    val contacts: Boolean = false,
-)
-
-enum class Decision { AUTO, SKIP }
+import app.callscribe.data.PolicyEntity
+import app.callscribe.data.RecordingEntity
 
 object PhoneNumbers {
     /** Digits only, last 9 digits, so "+972 54-123 4567" and "054-1234567" compare equal. Null if < 7 digits. */
@@ -34,32 +19,47 @@ object Names {
 }
 
 /**
- * Decides whether a recording is processed automatically. Exclude lists win over everything,
- * include lists win over the mode/flags. The same matcher is meant to be reused for retention rules.
+ * Picks the policy for a call: a matching contact policy wins over the group policy of the caller type.
+ * The same resolution drives automatic processing and retention.
  */
-object RuleEngine {
+object PolicyResolver {
 
-    fun matches(rule: ContactRuleEntity, parsed: ParsedName): Boolean {
-        val cp = parsed.counterparty ?: return false
-        if (Names.normalize(rule.displayName) == Names.normalize(cp)) return true
-        val n = PhoneNumbers.normalize(cp) ?: return false
-        return rule.numbers.split(',').any { it.isNotBlank() && it == n }
+    fun matches(policy: PolicyEntity, counterparty: String?): Boolean {
+        if (policy.isGroup || counterparty == null) return false
+        if (policy.displayName.isNotBlank() && Names.normalize(policy.displayName) == Names.normalize(counterparty)) return true
+        val n = PhoneNumbers.normalize(counterparty) ?: return false
+        return policy.numbers.split(',').any { it.isNotBlank() && it == n }
     }
 
-    fun decide(parsed: ParsedName, rules: AutoRules, contactRules: List<ContactRuleEntity>): Decision {
-        val matched = contactRules.filter { matches(it, parsed) }
-        if (matched.any { it.mode == RuleMode.EXCLUDE }) return Decision.SKIP
-        if (rules.mode == AutoMode.OFF) return Decision.SKIP
-        if (matched.any { it.mode == RuleMode.INCLUDE }) return Decision.AUTO
-        if (rules.mode == AutoMode.ALL) return Decision.AUTO
-        val on = when (parsed.labelKind) {
-            LabelKind.SPAM -> rules.spam
-            LabelKind.FRAUD -> rules.fraud
-            LabelKind.OTHER_LABEL -> rules.otherLabels
-            LabelKind.UNKNOWN_NUMBER -> rules.unknownNumbers
-            LabelKind.PRIVATE -> rules.privateNumbers
-            LabelKind.CONTACT -> rules.contacts
+    fun resolve(kind: LabelKind, counterparty: String?, policies: List<PolicyEntity>): PolicyEntity =
+        policies.firstOrNull { matches(it, counterparty) }
+            ?: policies.firstOrNull { it.groupKind == kind }
+            ?: PolicyEntity.defaultFor(kind)
+
+    fun resolve(r: RecordingEntity, policies: List<PolicyEntity>) = resolve(r.labelKind, r.counterparty, policies)
+}
+
+data class RetentionPlan(val trashAudio: List<RecordingEntity>, val deleteText: List<RecordingEntity>) {
+    val audioBytes get() = trashAudio.sumOf { it.sizeBytes }
+    val isEmpty get() = trashAudio.isEmpty() && deleteText.isEmpty()
+}
+
+/** Which recordings are past their retention period. Pure — unit-tested. */
+object Retention {
+    private const val DAY = 86_400L
+
+    fun plan(rows: List<RecordingEntity>, policies: List<PolicyEntity>, nowSec: Long): RetentionPlan {
+        val audio = mutableListOf<RecordingEntity>()
+        val text = mutableListOf<RecordingEntity>()
+        for (r in rows) {
+            val p = PolicyResolver.resolve(r, policies)
+            val age = nowSec - r.callTimeSec
+            if (p.audioRetentionDays >= 0 && !r.fileMissing && r.audioDeletedAt == null && age > p.audioRetentionDays * DAY) {
+                audio += r
+            }
+            val hasText = r.transcriptText != null || r.summary != null
+            if (p.textRetentionDays >= 0 && hasText && age > p.textRetentionDays * DAY) text += r
         }
-        return if (on) Decision.AUTO else Decision.SKIP
+        return RetentionPlan(audio, text)
     }
 }

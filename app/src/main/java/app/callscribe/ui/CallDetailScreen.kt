@@ -49,15 +49,14 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
-import app.callscribe.data.ContactRuleEntity
+import app.callscribe.data.PolicyEntity
 import app.callscribe.data.RecordingEntity
-import app.callscribe.data.RuleList
-import app.callscribe.data.RuleMode
 import app.callscribe.data.Status
 import app.callscribe.detect.WorkScheduler
 import app.callscribe.pipeline.ProcessWorker
 import app.callscribe.providers.Segment
 import app.callscribe.rules.PhoneNumbers
+import app.callscribe.rules.PolicyResolver
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
@@ -65,7 +64,7 @@ import kotlinx.serialization.json.Json
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () -> Unit) {
+fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () -> Unit, onPolicies: () -> Unit) {
     val r by graph.db.recordings().observe(id).collectAsStateWithLifecycle(initialValue = null)
     val settings by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     val ctx = LocalContext.current
@@ -96,16 +95,13 @@ fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () 
                     Button(onClick = onSetup) { Text("Set up transcription") }
                 } else {
                     Button(enabled = !busy && !rec.fileMissing, onClick = {
-                        val steps = buildSet {
-                            add(ProcessWorker.STEP_TRANSCRIBE)
-                            if (s.autoAnalyze && analyzerReady) add(ProcessWorker.STEP_ANALYZE)
-                        }
-                        scope.launch { graph.db.recordings().setStatus(rec.id, Status.QUEUED) }
-                        WorkScheduler.enqueueProcess(ctx, rec.id, steps, force = true)
+                        scope.launch { processNow(ctx, graph, rec) }
                     }) { Text(if (rec.transcriptText == null) "Transcribe" else "Re-transcribe") }
                 }
-                if (rec.transcriptText != null) {
-                    OutlinedButton(enabled = !busy && analyzerReady, onClick = {
+                if (rec.transcriptText != null && !analyzerReady) {
+                    OutlinedButton(onClick = onSetup) { Text("Set up AI summary") }
+                } else if (rec.transcriptText != null) {
+                    OutlinedButton(enabled = !busy, onClick = {
                         scope.launch { graph.db.recordings().setStatus(rec.id, Status.QUEUED) }
                         WorkScheduler.enqueueProcess(ctx, rec.id, setOf(ProcessWorker.STEP_ANALYZE), force = true)
                     }) { Text(if (rec.verdict == null) "Analyze" else "Re-analyze") }
@@ -129,7 +125,7 @@ fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () 
             if (rec.verdict != null) AnalysisCard(rec)
             if (rec.transcriptText != null) TranscriptCard(rec)
             CostCard(rec)
-            CallerRules(graph, rec)
+            CallerRules(graph, rec, onPolicies)
         }
     }
 }
@@ -162,10 +158,17 @@ private fun TranscriptCard(r: RecordingEntity) {
                 Column(Modifier.padding(12.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("תמלול", fontWeight = FontWeight.Bold)
                     if (segments.isEmpty()) Text(r.transcriptText.orEmpty())
+                    val speakers = segments.mapNotNull { it.speaker }.distinct()
+                    var last: String? = null
                     segments.forEach { seg ->
                         val t = seg.start.toInt()
-                        val who = seg.speaker?.let { "$it: " } ?: ""
-                        Text("[${t / 60}:${"%02d".format(t % 60)}] $who${seg.text.trim()}")
+                        val time = "${t / 60}:${"%02d".format(t % 60)}"
+                        if (seg.speaker != null && seg.speaker != last) {
+                            Text("דובר ${speakers.indexOf(seg.speaker) + 1} · $time", style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 6.dp))
+                            last = seg.speaker
+                        }
+                        Text(seg.text.trim())
                     }
                 }
             }
@@ -189,31 +192,48 @@ private fun CostCard(r: RecordingEntity) {
 }
 
 @Composable
-private fun CallerRules(graph: AppGraph, r: RecordingEntity) {
-    val cp = r.counterparty ?: return
+private fun CallerRules(graph: AppGraph, r: RecordingEntity, onPolicies: () -> Unit) {
     val scope = rememberCoroutineScope()
-    var done by remember { mutableStateOf<String?>(null) }
+    val policies by graph.db.policies().observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
+    val effective = PolicyResolver.resolve(r, policies)
+    val own = policies.firstOrNull { PolicyResolver.matches(it, r.counterparty) }
     Column {
-        Text("Automatic processing for this caller", fontWeight = FontWeight.Bold)
-        Row {
-            TextButton(onClick = {
-                scope.launch { addRule(graph, cp, RuleMode.INCLUDE); done = "Added to Always process" }
-            }) { Text("Always process") }
-            TextButton(onClick = {
-                scope.launch { addRule(graph, cp, RuleMode.EXCLUDE); done = "Added to Never process" }
-            }) { Text("Never process") }
+        Text("Policy for this caller", fontWeight = FontWeight.Bold)
+        val keep = if (effective.audioRetentionDays < 0) "keep recording" else "keep recording ${effective.audioRetentionDays} days"
+        val source = if (own != null) "Own policy: " else "From group \"${Fmt.label(r.labelKind)}\": "
+        val what = (if (effective.transcribe) "transcribe" else "don't transcribe") + (if (effective.summarize) " + summarize" else "")
+        Text("$source$what, $keep", style = MaterialTheme.typography.bodySmall)
+        val cp = r.counterparty
+        if (cp != null) Row {
+            TextButton(onClick = { scope.launch { setCallerPolicy(graph, cp, own, effective, true) } }) { Text("Always process") }
+            TextButton(onClick = { scope.launch { setCallerPolicy(graph, cp, own, effective, false) } }) { Text("Never process") }
         }
-        done?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        TextButton(onClick = onPolicies) { Text("Edit policies…") }
     }
 }
 
-private suspend fun addRule(graph: AppGraph, counterparty: String, mode: RuleMode) {
-    graph.db.contactRules().insert(
-        ContactRuleEntity(
-            list = RuleList.AUTO_PROCESS, mode = mode, displayName = counterparty,
-            numbers = PhoneNumbers.normalize(counterparty).orEmpty(),
+private suspend fun setCallerPolicy(graph: AppGraph, counterparty: String, own: PolicyEntity?, base: PolicyEntity, process: Boolean) {
+    if (own != null) {
+        graph.db.policies().update(own.copy(transcribe = process, summarize = process))
+    } else {
+        graph.db.policies().insert(
+            base.copy(
+                id = 0, groupKind = null, displayName = counterparty,
+                numbers = PhoneNumbers.normalize(counterparty).orEmpty(), transcribe = process, summarize = process,
+            )
         )
-    )
+    }
+}
+
+/** Manual "process": transcribe (if needed) and summarize when an AI provider is set up. Used by the list and detail screens. */
+suspend fun processNow(ctx: android.content.Context, graph: AppGraph, r: RecordingEntity) {
+    val s = graph.settings.get()
+    val steps = buildSet {
+        add(ProcessWorker.STEP_TRANSCRIBE)
+        if (graph.providers.analyzer(s)?.isConfigured() == true) add(ProcessWorker.STEP_ANALYZE)
+    }
+    graph.db.recordings().setStatus(r.id, Status.QUEUED)
+    WorkScheduler.enqueueProcess(ctx, r.id, steps, force = true)
 }
 
 @Composable

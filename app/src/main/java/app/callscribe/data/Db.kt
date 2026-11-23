@@ -9,6 +9,8 @@ import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -45,27 +47,58 @@ interface RecordingDao {
 }
 
 @Dao
-interface ContactRuleDao {
-    @Query("SELECT * FROM contact_rules WHERE list = :list ORDER BY displayName")
-    fun observe(list: RuleList): Flow<List<ContactRuleEntity>>
+interface PolicyDao {
+    @Query("SELECT * FROM policies ORDER BY groupKind IS NULL, displayName")
+    fun observeAll(): Flow<List<PolicyEntity>>
 
-    @Query("SELECT * FROM contact_rules WHERE list = :list")
-    suspend fun get(list: RuleList): List<ContactRuleEntity>
+    @Query("SELECT * FROM policies")
+    suspend fun all(): List<PolicyEntity>
 
     @Insert
-    suspend fun insert(r: ContactRuleEntity): Long
+    suspend fun insert(p: PolicyEntity): Long
 
-    @Query("DELETE FROM contact_rules WHERE id = :id")
+    @Update
+    suspend fun update(p: PolicyEntity)
+
+    @Query("DELETE FROM policies WHERE id = :id")
     suspend fun delete(id: Long)
+
+    /** Creates any missing group policy with its defaults. */
+    @androidx.room.Transaction
+    suspend fun ensureGroupDefaults() {
+        val have = all().mapNotNull { it.groupKind }.toSet()
+        LabelKind.entries.filter { it !in have }.forEach { insert(PolicyEntity.defaultFor(it)) }
+    }
 }
 
-@Database(entities = [RecordingEntity::class, ContactRuleEntity::class], version = 1, exportSchema = true)
+@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 2, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun recordings(): RecordingDao
-    abstract fun contactRules(): ContactRuleDao
+    abstract fun policies(): PolicyDao
 
     companion object {
+        /** v1 → v2: contact include/exclude rules become contact policies; retention timestamps on recordings. */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE recordings ADD COLUMN audioDeletedAt INTEGER")
+                db.execSQL("ALTER TABLE recordings ADD COLUMN textDeletedAt INTEGER")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `policies` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`groupKind` TEXT, `displayName` TEXT NOT NULL, `numbers` TEXT NOT NULL, " +
+                        "`transcribe` INTEGER NOT NULL, `summarize` INTEGER NOT NULL, " +
+                        "`audioRetentionDays` INTEGER NOT NULL, `textRetentionDays` INTEGER NOT NULL)"
+                )
+                db.execSQL(
+                    "INSERT INTO policies (groupKind, displayName, numbers, transcribe, summarize, audioRetentionDays, textRetentionDays) " +
+                        "SELECT NULL, displayName, numbers, mode = 'INCLUDE', mode = 'INCLUDE', -1, -1 FROM contact_rules"
+                )
+                db.execSQL("DROP TABLE contact_rules")
+            }
+        }
+
         fun create(context: Context): AppDatabase =
-            Room.databaseBuilder(context, AppDatabase::class.java, "callscribe.db").build()
+            Room.databaseBuilder(context, AppDatabase::class.java, "callscribe.db")
+                .addMigrations(MIGRATION_1_2)
+                .build()
     }
 }

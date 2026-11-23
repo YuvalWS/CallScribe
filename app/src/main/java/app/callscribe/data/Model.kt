@@ -58,21 +58,39 @@ data class RecordingEntity(
     val analysisOutputTokens: Long? = null,
 
     val exportedAt: Long? = null,
+    /** Set when the retention policy moved the audio to the trash. */
+    val audioDeletedAt: Long? = null,
+    /** Set when the retention policy deleted transcript + analysis. */
+    val textDeletedAt: Long? = null,
     val updatedAt: Long = System.currentTimeMillis(),
 ) {
     val totalCostUsd: Double get() = (transcriptionCostUsd ?: 0.0) + (analysisCostUsd ?: 0.0)
 }
 
-enum class RuleList { AUTO_PROCESS }
-enum class RuleMode { INCLUDE, EXCLUDE }
-
-/** A contact on an include / exclude list. [numbers] are normalized (see PhoneNumbers). */
-@Entity(tableName = "contact_rules")
-data class ContactRuleEntity(
+/**
+ * What to do with calls of one group (a caller type) or one contact. Contact policies override the group policy.
+ * Retention values are days; -1 = keep forever.
+ */
+@Entity(tableName = "policies")
+data class PolicyEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val list: RuleList,
-    val mode: RuleMode,
-    val displayName: String,
+    /** Group policies have [groupKind] set; contact policies have [displayName]/[numbers]. */
+    val groupKind: LabelKind? = null,
+    val displayName: String = "",
     /** Comma-separated normalized numbers (last 9 digits). */
-    val numbers: String,
-)
+    val numbers: String = "",
+    val transcribe: Boolean,
+    val summarize: Boolean,
+    val audioRetentionDays: Int = -1,
+    val textRetentionDays: Int = -1,
+) {
+    val isGroup get() = groupKind != null
+
+    companion object {
+        fun defaultFor(kind: LabelKind) = PolicyEntity(
+            groupKind = kind,
+            transcribe = kind != LabelKind.CONTACT,
+            summarize = kind != LabelKind.CONTACT,
+        )
+    }
+}

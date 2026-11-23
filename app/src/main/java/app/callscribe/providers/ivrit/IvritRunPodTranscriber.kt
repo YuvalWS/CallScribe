@@ -60,7 +60,9 @@ class IvritRunPodTranscriber(
             val text = resp.body.string()
             if (!resp.isSuccessful) throw httpError(resp.code, text)
             val o = Json.parseToJsonElement(text).jsonObject
-            "Connected. Workers: ${o["workers"] ?: "?"}"
+            val w = o["workers"] as? JsonObject
+            fun n(k: String) = w?.get(k)?.jsonPrimitive?.contentOrNull ?: "0"
+            "Connected. Workers: ${n("ready")} ready, ${n("running")} running, ${n("initializing")} starting"
         }
     }
 

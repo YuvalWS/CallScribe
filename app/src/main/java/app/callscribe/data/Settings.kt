@@ -9,11 +9,10 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import app.callscribe.rules.AutoMode
-import app.callscribe.rules.AutoRules
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -27,13 +26,11 @@ private val Context.dataStore by preferencesDataStore(name = "settings")
 
 data class AppSettings(
     val pathPrefixes: List<String> = listOf("Recordings/Call"),
-    val autoRules: AutoRules = AutoRules(),
-    val autoAnalyze: Boolean = true,
     val autoProcessFromSec: Long = 0,
     val webhookUrl: String = "",
     val autoExport: Boolean = false,
     val transcriberId: String = "ivrit-runpod",
-    val analyzerId: String = "claude",
+    val analyzerId: String = "gemini",
     val runpodEndpointId: String = "",
     /** Only changed by debug builds (fake server tests). */
     val runpodBaseUrl: String = "https://api.runpod.ai/v2",
@@ -42,6 +39,15 @@ data class AppSettings(
     val runpodPricePerSec: Double = 0.00019,
     val diarize: Boolean = false,
     val claudeModel: String = "claude-opus-5-5",
+    val geminiModel: String = "gemini-3.5-flash-lite",
+    /** Requests per minute allowed by the user's Gemini tier (free tier: 15). */
+    val geminiRpm: Int = 15,
+    /** USD per million tokens; 0 on the free tier. */
+    val geminiPriceIn: Double = 0.0,
+    val geminiPriceOut: Double = 0.0,
+    val openrouterModel: String = "anthropic/claude-haiku-5.5",
+    /** Master switch for automatic processing of new calls (per-group policies decide the rest). */
+    val autoEnabled: Boolean = true,
 )
 
 class SettingsRepository(private val context: Context) {
@@ -66,6 +72,12 @@ class SettingsRepository(private val context: Context) {
         val rpPrice = doublePreferencesKey("runpod_price_per_sec")
         val diarize = booleanPreferencesKey("diarize")
         val claudeModel = stringPreferencesKey("claude_model")
+        val gemModel = stringPreferencesKey("gemini_model")
+        val gemRpm = intPreferencesKey("gemini_rpm")
+        val gemIn = doublePreferencesKey("gemini_price_in")
+        val gemOut = doublePreferencesKey("gemini_price_out")
+        val orModel = stringPreferencesKey("openrouter_model")
+        val autoEnabled = booleanPreferencesKey("auto_enabled")
     }
 
     val flow: Flow<AppSettings> = context.dataStore.data.map { p -> p.toSettings() }
@@ -74,19 +86,8 @@ class SettingsRepository(private val context: Context) {
 
     private fun Preferences.toSettings(): AppSettings {
         val d = AppSettings()
-        val r = d.autoRules
         return AppSettings(
             pathPrefixes = this[K.prefixes]?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: d.pathPrefixes,
-            autoRules = AutoRules(
-                mode = this[K.mode]?.let { runCatching { AutoMode.valueOf(it) }.getOrNull() } ?: r.mode,
-                spam = this[K.spam] ?: r.spam,
-                fraud = this[K.fraud] ?: r.fraud,
-                otherLabels = this[K.other] ?: r.otherLabels,
-                unknownNumbers = this[K.unknown] ?: r.unknownNumbers,
-                privateNumbers = this[K.private] ?: r.privateNumbers,
-                contacts = this[K.contacts] ?: r.contacts,
-            ),
-            autoAnalyze = this[K.autoAnalyze] ?: d.autoAnalyze,
             autoProcessFromSec = this[K.autoFrom] ?: d.autoProcessFromSec,
             webhookUrl = this[K.webhook] ?: d.webhookUrl,
             autoExport = this[K.autoExport] ?: d.autoExport,
@@ -98,6 +99,12 @@ class SettingsRepository(private val context: Context) {
             runpodPricePerSec = this[K.rpPrice] ?: d.runpodPricePerSec,
             diarize = this[K.diarize] ?: d.diarize,
             claudeModel = this[K.claudeModel] ?: d.claudeModel,
+            geminiModel = this[K.gemModel] ?: d.geminiModel,
+            geminiRpm = this[K.gemRpm] ?: d.geminiRpm,
+            geminiPriceIn = this[K.gemIn] ?: d.geminiPriceIn,
+            geminiPriceOut = this[K.gemOut] ?: d.geminiPriceOut,
+            openrouterModel = this[K.orModel] ?: d.openrouterModel,
+            autoEnabled = this[K.autoEnabled] ?: d.autoEnabled,
         )
     }
 
@@ -105,14 +112,6 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { p ->
             val s = transform(p.toSettings())
             p[K.prefixes] = s.pathPrefixes.joinToString(",")
-            p[K.mode] = s.autoRules.mode.name
-            p[K.spam] = s.autoRules.spam
-            p[K.fraud] = s.autoRules.fraud
-            p[K.other] = s.autoRules.otherLabels
-            p[K.unknown] = s.autoRules.unknownNumbers
-            p[K.private] = s.autoRules.privateNumbers
-            p[K.contacts] = s.autoRules.contacts
-            p[K.autoAnalyze] = s.autoAnalyze
             p[K.autoFrom] = s.autoProcessFromSec
             p[K.webhook] = s.webhookUrl
             p[K.autoExport] = s.autoExport
@@ -124,13 +123,19 @@ class SettingsRepository(private val context: Context) {
             p[K.rpPrice] = s.runpodPricePerSec
             p[K.diarize] = s.diarize
             p[K.claudeModel] = s.claudeModel
+            p[K.gemModel] = s.geminiModel
+            p[K.gemRpm] = s.geminiRpm
+            p[K.gemIn] = s.geminiPriceIn
+            p[K.gemOut] = s.geminiPriceOut
+            p[K.orModel] = s.openrouterModel
+            p[K.autoEnabled] = s.autoEnabled
         }
     }
 }
 
 /** API keys, encrypted with an Android Keystore AES-GCM key. Stored in `secrets.xml`, which is excluded from backup. */
 class SecretStore(context: Context) {
-    enum class Key { RUNPOD_API_KEY, ANTHROPIC_API_KEY, WEBHOOK_TOKEN }
+    enum class Key { RUNPOD_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, WEBHOOK_TOKEN }
 
     private val prefs: SharedPreferences = context.getSharedPreferences("secrets", Context.MODE_PRIVATE)
     private val alias = "callscribe_secrets"

@@ -1,17 +1,15 @@
 package app.callscribe
 
-import app.callscribe.data.ContactRuleEntity
 import app.callscribe.data.LabelKind
-import app.callscribe.data.RuleList
-import app.callscribe.data.RuleMode
+import app.callscribe.data.PolicyEntity
+import app.callscribe.data.RecordingEntity
 import app.callscribe.detect.RecordingNameParser
-import app.callscribe.rules.AutoMode
-import app.callscribe.rules.AutoRules
-import app.callscribe.rules.Decision
 import app.callscribe.rules.PhoneNumbers
-import app.callscribe.rules.RuleEngine
+import app.callscribe.rules.PolicyResolver
+import app.callscribe.rules.Retention
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDateTime
 
@@ -73,44 +71,86 @@ class ParserTest {
     }
 }
 
-class RulesTest {
-    private fun parsed(name: String) = RecordingNameParser.parse("Call recording ${name}_250101_101010.m4a")
-    private fun rule(name: String, mode: RuleMode, number: String = "") =
-        ContactRuleEntity(list = RuleList.AUTO_PROCESS, mode = mode, displayName = name, numbers = PhoneNumbers.normalize(number).orEmpty())
+class PolicyTest {
+    private fun cp(name: String) = RecordingNameParser.parse("Call recording ${name}_250101_101010.m4a")
+    private val groups = LabelKind.entries.map { PolicyEntity.defaultFor(it) }
+    private fun contact(name: String, process: Boolean, number: String = "") = PolicyEntity(
+        displayName = name, numbers = PhoneNumbers.normalize(number).orEmpty(), transcribe = process, summarize = process,
+    )
+    private fun resolve(name: String, policies: List<PolicyEntity>) = cp(name).let { PolicyResolver.resolve(it.labelKind, it.counterparty, policies) }
 
     @Test fun normalizeNumbers() {
         assertEquals(PhoneNumbers.normalize("+972 54-123-4567"), PhoneNumbers.normalize("054-1234567"))
         assertNull(PhoneNumbers.normalize("123"))
     }
 
-    @Test fun customModeSkipsContactsByDefault() {
-        assertEquals(Decision.SKIP, RuleEngine.decide(parsed("Mom"), AutoRules(), emptyList()))
-        assertEquals(Decision.AUTO, RuleEngine.decide(parsed("0541234567"), AutoRules(), emptyList()))
+    @Test fun defaultsSkipContactsProcessOthers() {
+        assertEquals(false, resolve("Mom", groups).transcribe)
+        assertEquals(true, resolve("0541234567", groups).transcribe)
+        assertEquals(true, resolve("Suspected spam", groups).summarize)
     }
 
-    @Test fun offModeSkipsEverythingButIncludeDoesNotOverrideOff() {
-        val off = AutoRules(mode = AutoMode.OFF)
-        assertEquals(Decision.SKIP, RuleEngine.decide(parsed("0541234567"), off, emptyList()))
-        assertEquals(Decision.SKIP, RuleEngine.decide(parsed("Mom"), off, listOf(rule("Mom", RuleMode.INCLUDE))))
+    @Test fun contactPolicyOverridesGroup() {
+        assertEquals(true, resolve("Mom", groups + contact("mom", true)).transcribe)
+        assertEquals(false, resolve("0541234567", groups + contact("Plumber", false, "+972 54-123-4567")).transcribe)
     }
 
-    @Test fun excludeWinsEvenInAllMode() {
-        val all = AutoRules(mode = AutoMode.ALL)
-        assertEquals(Decision.AUTO, RuleEngine.decide(parsed("Mom"), all, emptyList()))
-        assertEquals(Decision.SKIP, RuleEngine.decide(parsed("Mom"), all, listOf(rule("mom", RuleMode.EXCLUDE))))
+    @Test fun missingGroupFallsBackToDefault() {
+        assertEquals(true, resolve("0541234567", emptyList()).transcribe)
+    }
+}
+
+class RetentionTest {
+    private val day = 86_400L
+    private val now = 1_000 * day
+    private fun rec(id: Long, kind: LabelKind, ageDays: Long, text: String? = null, cp: String? = "0541234567") = RecordingEntity(
+        id = id, contentHash = "h$id", mediaId = id, uri = "u$id", displayName = "f$id", relativePath = "Recordings/Call/",
+        sizeBytes = 1000, durationMs = 1000, dateAddedSec = 0, dateModifiedSec = 0,
+        counterparty = cp, samsungLabel = null, labelKind = kind, callTimeSec = now - ageDays * day, transcriptText = text,
+    )
+
+    @Test fun keepForeverByDefault() {
+        val plan = Retention.plan(listOf(rec(1, LabelKind.SPAM, 999, "x")), LabelKind.entries.map { PolicyEntity.defaultFor(it) }, now)
+        assertTrue(plan.isEmpty)
     }
 
-    @Test fun includeContactInCustomMode() {
-        assertEquals(Decision.AUTO, RuleEngine.decide(parsed("Mom"), AutoRules(), listOf(rule("Mom", RuleMode.INCLUDE))))
+    @Test fun audioAndTextRetentionAreSeparate() {
+        val spam = PolicyEntity.defaultFor(LabelKind.SPAM).copy(audioRetentionDays = 7, textRetentionDays = 30)
+        val unknown = PolicyEntity.defaultFor(LabelKind.UNKNOWN_NUMBER).copy(audioRetentionDays = 7) // text kept forever
+        val rows = listOf(
+            rec(1, LabelKind.SPAM, 10, "t"), rec(2, LabelKind.SPAM, 40, "t"), rec(3, LabelKind.SPAM, 3, "t"),
+            rec(4, LabelKind.UNKNOWN_NUMBER, 400, "t"),
+        )
+        val plan = Retention.plan(rows, listOf(spam, unknown), now)
+        assertEquals(setOf(1L, 2L, 4L), plan.trashAudio.map { it.id }.toSet())
+        assertEquals(setOf(2L), plan.deleteText.map { it.id }.toSet())
     }
 
-    @Test fun numberMatchesAcrossFormats() {
-        val r = rule("Plumber", RuleMode.EXCLUDE, "+972 54-123-4567")
-        assertEquals(Decision.SKIP, RuleEngine.decide(parsed("0541234567"), AutoRules(mode = AutoMode.ALL), listOf(r)))
+    @Test fun contactOverrideAndAlreadyDeletedAudio() {
+        val group = PolicyEntity.defaultFor(LabelKind.CONTACT).copy(audioRetentionDays = 30)
+        val keepMom = PolicyEntity(displayName = "Mom", transcribe = false, summarize = false)
+        val rows = listOf(
+            rec(1, LabelKind.CONTACT, 60, cp = "Mom"),
+            rec(2, LabelKind.CONTACT, 60, cp = "Dan"),
+            rec(3, LabelKind.CONTACT, 60, cp = "Dan").copy(fileMissing = true, audioDeletedAt = 1),
+        )
+        assertEquals(listOf(2L), Retention.plan(rows, listOf(group, keepMom), now).trashAudio.map { it.id })
     }
+}
 
-    @Test fun excludeBeatsInclude() {
-        val rules = listOf(rule("Mom", RuleMode.INCLUDE), rule("Mom", RuleMode.EXCLUDE))
-        assertEquals(Decision.SKIP, RuleEngine.decide(parsed("Mom"), AutoRules(mode = AutoMode.ALL), rules))
+class SearchTest {
+    private fun rec(cp: String?, text: String? = null, summary: String? = null) = RecordingEntity(
+        contentHash = "h", mediaId = 1, uri = "u", displayName = "Call recording x.m4a", relativePath = "",
+        sizeBytes = 1, durationMs = 1, dateAddedSec = 0, dateModifiedSec = 0, counterparty = cp, samsungLabel = null,
+        labelKind = LabelKind.CONTACT, callTimeSec = 0, transcriptText = text, summary = summary,
+    )
+
+    @Test fun byNameNumberAndText() {
+        assertTrue(app.callscribe.ui.CallSearch.matches(rec("ישראל ישראלי"), "ישראל"))
+        assertTrue(app.callscribe.ui.CallSearch.matches(rec("+972541234567"), "054-1234567"))
+        assertTrue(app.callscribe.ui.CallSearch.matches(rec("x", text = "שלום, רציתי להציע הלוואה"), "הלוואה"))
+        assertTrue(app.callscribe.ui.CallSearch.matches(rec("x", summary = "Loan offer"), "loan"))
+        assertTrue(!app.callscribe.ui.CallSearch.matches(rec("Dana"), "הלוואה"))
+        assertTrue(app.callscribe.ui.CallSearch.matches(rec("Dana"), "  "))
     }
 }

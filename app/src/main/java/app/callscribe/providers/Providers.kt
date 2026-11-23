@@ -77,7 +77,7 @@ class ProviderError(message: String, val retryable: Boolean) : Exception(message
 /** Maps provider ids to implementations built from the current settings. Add new providers here. */
 class ProviderRegistry(private val secrets: SecretStore) {
     val transcriberIds = listOf("ivrit-runpod")
-    val analyzerIds = listOf("claude")
+    val analyzerIds = listOf("gemini", "openrouter", "claude")
 
     fun transcriber(s: AppSettings): Transcriber? = when (s.transcriberId) {
         "ivrit-runpod" -> app.callscribe.providers.ivrit.IvritRunPodTranscriber(
@@ -95,6 +95,15 @@ class ProviderRegistry(private val secrets: SecretStore) {
         "claude" -> app.callscribe.providers.claude.ClaudeAnalyzer(
             apiKey = secrets.get(SecretStore.Key.ANTHROPIC_API_KEY),
             model = s.claudeModel,
+        )
+        "gemini" -> app.callscribe.providers.gemini.GeminiAnalyzer(
+            apiKey = secrets.get(SecretStore.Key.GEMINI_API_KEY),
+            model = s.geminiModel, rpm = s.geminiRpm,
+            priceInPerM = s.geminiPriceIn, priceOutPerM = s.geminiPriceOut,
+        )
+        "openrouter" -> app.callscribe.providers.openrouter.OpenRouterAnalyzer(
+            apiKey = secrets.get(SecretStore.Key.OPENROUTER_API_KEY),
+            model = s.openrouterModel,
         )
         else -> null
     }

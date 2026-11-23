@@ -40,17 +40,19 @@ import app.callscribe.pipeline.Notifier
 
 class MainActivity : ComponentActivity() {
     private var openId by mutableStateOf(-1L)
+    private var openRetention by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         openId = intent.getLongExtra(Notifier.EXTRA_RECORDING_ID, -1)
+        openRetention = intent.getBooleanExtra(Notifier.EXTRA_OPEN_RETENTION, false)
         val graph = (application as CallScribeApp).graph
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
                     PermissionGate {
-                        AppNav(graph, openId) { openId = -1 }
+                        AppNav(graph, openId, openRetention) { openId = -1; openRetention = false }
                     }
                 }
             }
@@ -60,27 +62,36 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         openId = intent.getLongExtra(Notifier.EXTRA_RECORDING_ID, -1)
+        openRetention = intent.getBooleanExtra(Notifier.EXTRA_OPEN_RETENTION, false)
     }
 }
 
 @Composable
-private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, consumed: () -> Unit) {
+private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: Boolean, consumed: () -> Unit) {
     val nav = rememberNavController()
-    LaunchedEffect(openId) {
+    LaunchedEffect(openId, openRetention) {
         if (openId > 0) { nav.navigate("detail/$openId"); consumed() }
+        if (openRetention) { nav.navigate("retention"); consumed() }
     }
     NavHost(nav, startDestination = "list") {
         composable("list") {
-            CallListScreen(graph, onOpen = { nav.navigate("detail/$it") }, onSettings = { nav.navigate("settings") })
+            CallListScreen(graph, onOpen = { nav.navigate("detail/$it") }, onSettings = { nav.navigate("settings") }, onSetup = { nav.navigate("providers") })
         }
         composable("detail/{id}", arguments = listOf(navArgument("id") { type = NavType.LongType })) { e ->
-            CallDetailScreen(graph, e.arguments!!.getLong("id"), onBack = { nav.popBackStack() }, onSetup = { nav.navigate("providers") })
+            CallDetailScreen(
+                graph, e.arguments!!.getLong("id"), onBack = { nav.popBackStack() },
+                onSetup = { nav.navigate("providers") }, onPolicies = { nav.navigate("policies") },
+            )
         }
         composable("settings") {
-            SettingsScreen(graph, onBack = { nav.popBackStack() }, onProviders = { nav.navigate("providers") }, onRules = { nav.navigate("rules") })
+            SettingsScreen(
+                graph, onBack = { nav.popBackStack() }, onProviders = { nav.navigate("providers") },
+                onRules = { nav.navigate("policies") }, onRetention = { nav.navigate("retention") },
+            )
         }
         composable("providers") { ProvidersScreen(graph, onBack = { nav.popBackStack() }) }
-        composable("rules") { RulesScreen(graph, onBack = { nav.popBackStack() }) }
+        composable("policies") { PoliciesScreen(graph, onBack = { nav.popBackStack() }, onRetention = { nav.navigate("retention") }) }
+        composable("retention") { RetentionScreen(graph, onBack = { nav.popBackStack() }) }
     }
 }
 

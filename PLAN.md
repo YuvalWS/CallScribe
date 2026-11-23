@@ -518,18 +518,21 @@ Built and verified on a Galaxy S20 FE (Android 13, One UI 5.1) with 372 real rec
   (tokens × list price) costs, plus the total in the call list header.
 - Not yet verified visually: UI screens (phone was locked during development).
 
-## 4b. TODO (requested 2026-11-22, not started unless noted)
-- **Retention policy for the recordings themselves** — delete (via MediaStore *trash*, recoverable for
-  30 days) recordings older than N days, per group/contact, reusing the include/exclude matcher
-  (`RuleEngine.matches`) with a new `RuleList.RETENTION`. Options: keep forever / delete audio after N days
-  but keep transcript / delete everything after N days. Deleting other apps' media needs user consent per
-  batch (`MediaStore.createTrashRequest`) unless the user grants *Media management* (`MANAGE_MEDIA`) special access,
-  which allows it silently. Always show a preview ("N recordings, X MB") before the first run.
-- **Google Drive backup & sync** — back up the DB (transcripts, analyses, rules; never API keys) and optionally
-  the audio to the user's own Drive app-data folder (`drive.appdata` scope via Google Sign-In / Credential Manager
-  + Drive REST). Restore on a new phone re-links rows to audio by content hash. Needs an OAuth client ID created by
-  whoever builds the app (document in README).
-- **Cost view** — ✅ done (see 4a). Later: monthly totals and a budget alert.
+## 4b. Done 2026-11-23 (second round)
+- **Policies** replace include/exclude lists: per caller type and per contact — transcribe, summarize,
+  recording retention, optional text retention (default: keep text). DB migration v1→v2 converts old lists.
+- **Retention**: daily worker expires text (opt-in) and notifies about recordings due; review screen moves them to
+  the MediaStore trash via `createTrashRequest` (one system confirmation, or none with `MANAGE_MEDIA`).
+- **AI providers**: Gemini (RPM throttling, 429/503 retry) and OpenRouter (exact per-request cost from `usage.cost`)
+  next to Claude, chosen in Settings. Live-tested with real keys (`LiveProvidersTest`, opt-in via `CALLSCRIBE_LIVE=1`).
+- **Search** (name / number in any format / transcript & summary text) and a Transcribe button on every row.
+- Verified on device: real transcription from the row button (with diarization) and policy/retention screens.
+
+## 4c. TODO
+- **Google Drive backup & sync** — back up the DB (transcripts, analyses, policies; never API keys) and optionally
+  audio to the user's own Drive app-data folder (`drive.appdata` scope). Restore re-links rows to audio by content hash.
+  Needs an OAuth client ID created by whoever builds the app.
+- Monthly cost totals and a budget alert.
 
 ## 5. Phase 4 (optional, later)
 - **Speaker separation ("who said what")** — show the transcript as a chat: *Me* vs *Caller* (or Speaker 1/2/3 on

@@ -18,11 +18,9 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.callscribe.CallScribeApp
 import app.callscribe.data.RecordingEntity
-import app.callscribe.data.RuleList
 import app.callscribe.data.Status
 import app.callscribe.pipeline.ProcessWorker
-import app.callscribe.rules.Decision
-import app.callscribe.rules.RuleEngine
+import app.callscribe.rules.PolicyResolver
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -35,6 +33,10 @@ object WorkScheduler {
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
             PERIODIC, ExistingPeriodicWorkPolicy.KEEP,
             PeriodicWorkRequestBuilder<ScanWorker>(15, TimeUnit.MINUTES).build(),
+        )
+        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+            "retention-daily", ExistingPeriodicWorkPolicy.KEEP,
+            PeriodicWorkRequestBuilder<app.callscribe.pipeline.RetentionWorker>(1, TimeUnit.DAYS).build(),
         )
     }
 
@@ -95,10 +97,11 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             val result = graph.syncFiles(files)
             Log.i(TAG, "scan: ${files.size} files, ${result.newRows.size} new, ${result.relinked} relinked, ${result.missing} missing")
 
-            val contactRules = graph.db.contactRules().get(RuleList.AUTO_PROCESS)
+            graph.db.policies().ensureGroupDefaults()
+            val policies = graph.db.policies().all()
             for (row in result.newRows) {
                 if (row.dateAddedSec < settings.autoProcessFromSec) continue
-                handleNew(row, contactRules, settings)
+                handleNew(row, policies, settings)
             }
             return Result.success()
         } catch (e: SecurityException) {
@@ -111,26 +114,26 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
 
     private suspend fun handleNew(
         row: RecordingEntity,
-        contactRules: List<app.callscribe.data.ContactRuleEntity>,
+        policies: List<app.callscribe.data.PolicyEntity>,
         settings: app.callscribe.data.AppSettings,
     ) {
         val graph = (applicationContext as CallScribeApp).graph
-        val parsed = RecordingNameParser.parse(row.displayName)
-        when (RuleEngine.decide(parsed, settings.autoRules, contactRules)) {
-            Decision.SKIP -> graph.db.recordings().setStatus(row.id, Status.SKIPPED_BY_RULE)
-            Decision.AUTO -> {
-                val steps = buildSet {
-                    if (settings.autoExport && settings.webhookUrl.isNotBlank()) add(ProcessWorker.STEP_EXPORT)
-                    if (graph.providers.transcriber(settings)?.isConfigured() == true) {
-                        add(ProcessWorker.STEP_TRANSCRIBE)
-                        if (settings.autoAnalyze) add(ProcessWorker.STEP_ANALYZE)
-                    }
-                }
-                if (steps.isEmpty()) return
-                graph.db.recordings().setStatus(row.id, Status.QUEUED)
-                WorkScheduler.enqueueProcess(applicationContext, row.id, steps, force = false)
+        val policy = PolicyResolver.resolve(row, policies)
+        val canTranscribe = graph.providers.transcriber(settings)?.isConfigured() == true
+        if (!settings.autoEnabled || !policy.transcribe) {
+            graph.db.recordings().setStatus(row.id, Status.SKIPPED_BY_RULE)
+            return
+        }
+        val steps = buildSet {
+            if (settings.autoExport && settings.webhookUrl.isNotBlank()) add(ProcessWorker.STEP_EXPORT)
+            if (canTranscribe) {
+                add(ProcessWorker.STEP_TRANSCRIBE)
+                if (policy.summarize) add(ProcessWorker.STEP_ANALYZE)
             }
         }
+        if (steps.isEmpty()) return
+        graph.db.recordings().setStatus(row.id, Status.QUEUED)
+        WorkScheduler.enqueueProcess(applicationContext, row.id, steps, force = false)
     }
 }
 

@@ -1,0 +1,304 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 2,
+    "identityHash": "2fc7907d32d8fc4ffed27acb62bd1c03",
+    "entities": [
+      {
+        "tableName": "recordings",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `contentHash` TEXT NOT NULL, `mediaId` INTEGER NOT NULL, `uri` TEXT NOT NULL, `displayName` TEXT NOT NULL, `relativePath` TEXT NOT NULL, `sizeBytes` INTEGER NOT NULL, `durationMs` INTEGER NOT NULL, `dateAddedSec` INTEGER NOT NULL, `dateModifiedSec` INTEGER NOT NULL, `fileMissing` INTEGER NOT NULL, `counterparty` TEXT, `samsungLabel` TEXT, `labelKind` TEXT NOT NULL, `callTimeSec` INTEGER NOT NULL, `status` TEXT NOT NULL, `error` TEXT, `transcriptText` TEXT, `transcriptJson` TEXT, `transcriberId` TEXT, `providerJobId` TEXT, `transcriptionCostUsd` REAL, `transcriptionGpuMs` INTEGER, `analyzerId` TEXT, `analysisJson` TEXT, `summary` TEXT, `verdict` TEXT, `spamConfidence` REAL, `category` TEXT, `callerIntent` TEXT, `analysisCostUsd` REAL, `analysisInputTokens` INTEGER, `analysisOutputTokens` INTEGER, `exportedAt` INTEGER, `audioDeletedAt` INTEGER, `textDeletedAt` INTEGER, `updatedAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contentHash",
+            "columnName": "contentHash",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mediaId",
+            "columnName": "mediaId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "uri",
+            "columnName": "uri",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "relativePath",
+            "columnName": "relativePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sizeBytes",
+            "columnName": "sizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "durationMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dateAddedSec",
+            "columnName": "dateAddedSec",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "dateModifiedSec",
+            "columnName": "dateModifiedSec",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileMissing",
+            "columnName": "fileMissing",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "counterparty",
+            "columnName": "counterparty",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "samsungLabel",
+            "columnName": "samsungLabel",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "labelKind",
+            "columnName": "labelKind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "callTimeSec",
+            "columnName": "callTimeSec",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "error",
+            "columnName": "error",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "transcriptText",
+            "columnName": "transcriptText",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "transcriptJson",
+            "columnName": "transcriptJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "transcriberId",
+            "columnName": "transcriberId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "providerJobId",
+            "columnName": "providerJobId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "transcriptionCostUsd",
+            "columnName": "transcriptionCostUsd",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "transcriptionGpuMs",
+            "columnName": "transcriptionGpuMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "analyzerId",
+            "columnName": "analyzerId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "analysisJson",
+            "columnName": "analysisJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "summary",
+            "columnName": "summary",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "verdict",
+            "columnName": "verdict",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "spamConfidence",
+            "columnName": "spamConfidence",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "category",
+            "columnName": "category",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "callerIntent",
+            "columnName": "callerIntent",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "analysisCostUsd",
+            "columnName": "analysisCostUsd",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "analysisInputTokens",
+            "columnName": "analysisInputTokens",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "analysisOutputTokens",
+            "columnName": "analysisOutputTokens",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "exportedAt",
+            "columnName": "exportedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "audioDeletedAt",
+            "columnName": "audioDeletedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "textDeletedAt",
+            "columnName": "textDeletedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_recordings_contentHash",
+            "unique": true,
+            "columnNames": [
+              "contentHash"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_recordings_contentHash` ON `${TABLE_NAME}` (`contentHash`)"
+          },
+          {
+            "name": "index_recordings_mediaId",
+            "unique": false,
+            "columnNames": [
+              "mediaId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_recordings_mediaId` ON `${TABLE_NAME}` (`mediaId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "policies",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `groupKind` TEXT, `displayName` TEXT NOT NULL, `numbers` TEXT NOT NULL, `transcribe` INTEGER NOT NULL, `summarize` INTEGER NOT NULL, `audioRetentionDays` INTEGER NOT NULL, `textRetentionDays` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupKind",
+            "columnName": "groupKind",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "numbers",
+            "columnName": "numbers",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "transcribe",
+            "columnName": "transcribe",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "summarize",
+            "columnName": "summarize",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "audioRetentionDays",
+            "columnName": "audioRetentionDays",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "textRetentionDays",
+            "columnName": "textRetentionDays",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '2fc7907d32d8fc4ffed27acb62bd1c03')"
+    ]
+  }
+}
