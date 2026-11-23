@@ -118,7 +118,7 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         settings: app.callscribe.data.AppSettings,
     ) {
         val graph = (applicationContext as CallScribeApp).graph
-        val policy = PolicyResolver.resolve(row, policies)
+        val policy = PolicyResolver.forProcessing(row, policies)
         val canTranscribe = graph.providers.transcriber(settings)?.isConfigured() == true
         if (!settings.autoEnabled || !policy.transcribe) {
             graph.db.recordings().setStatus(row.id, Status.SKIPPED_BY_RULE)

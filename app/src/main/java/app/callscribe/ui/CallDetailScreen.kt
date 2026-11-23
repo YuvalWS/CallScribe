@@ -64,6 +64,7 @@ import app.callscribe.providers.AnalysisPrompt
 import app.callscribe.providers.Segment
 import app.callscribe.rules.PhoneNumbers
 import app.callscribe.rules.PolicyResolver
+import app.callscribe.rules.keptForever
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.serialization.builtins.ListSerializer
@@ -246,14 +247,21 @@ private fun CostCard(r: RecordingEntity) {
 private fun CallerRules(graph: AppGraph, r: RecordingEntity, onPolicies: () -> Unit) {
     val scope = rememberCoroutineScope()
     val policies by graph.db.policies().observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
-    val effective = PolicyResolver.resolve(r, policies)
+    val resolution = PolicyResolver.explain(r, policies)
+    val effective = resolution.policy
     val own = policies.firstOrNull { PolicyResolver.matches(it, r.counterparty) }
     Column {
-        Text("Policy for this caller", fontWeight = FontWeight.Bold)
-        val keep = if (effective.audioRetentionDays < 0) "keep recording" else "keep recording ${effective.audioRetentionDays} days"
-        val source = if (own != null) "Own policy: " else "From group \"${Fmt.label(r.labelKind)}\": "
-        val what = (if (effective.transcribe) "transcribe" else "don't transcribe") + (if (effective.summarize) " + summarize" else "")
-        Text("$source$what, $keep", style = MaterialTheme.typography.bodySmall)
+        Text("Policy for this call", fontWeight = FontWeight.Bold)
+        Text(resolution.reason { Fmt.label(it) }, style = MaterialTheme.typography.bodySmall)
+        val days = { d: Int -> if (d < 0) "forever" else "$d days" }
+        val what = (if (effective.transcribe) "transcribe" else "don't transcribe") +
+            (if (effective.transcribe && effective.summarize) " + summarize" else "")
+        val text = if (effective.textRetentionDays < 0) "" else ", text ${days(effective.textRetentionDays)}"
+        Text(
+            "$what · recording on phone ${days(effective.audioRetentionDays)}$text · cloud ${cloudLabel(effective).lowercase()}",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (r.keptForever()) Text("Marked keep forever: never deleted, whatever the policy says.", style = MaterialTheme.typography.bodySmall)
         val cp = r.counterparty
         if (cp != null) Row {
             TextButton(onClick = { scope.launch { setCallerPolicy(graph, cp, own, effective, true) } }) { Text("Always process") }
@@ -269,7 +277,7 @@ private suspend fun setCallerPolicy(graph: AppGraph, counterparty: String, own: 
     } else {
         graph.db.policies().insert(
             base.copy(
-                id = 0, groupKind = null, displayName = counterparty,
+                id = 0, groupKind = null, tag = null, displayName = counterparty,
                 numbers = PhoneNumbers.normalize(counterparty).orEmpty(), transcribe = process, summarize = process,
             )
         )

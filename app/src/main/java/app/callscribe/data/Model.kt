@@ -1,5 +1,6 @@
 package app.callscribe.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -73,26 +74,48 @@ data class RecordingEntity(
     val totalCostUsd: Double get() = (transcriptionCostUsd ?: 0.0) + (analysisCostUsd ?: 0.0)
 }
 
+/** What a policy applies to. Precedence when several match a call: CONTACT > TAG > CALLER_TYPE (> built-in default). */
+enum class PolicyTarget { CONTACT, TAG, CALLER_TYPE }
+
+/** Tag keys usable as policy targets — the same closed list as [Relationship] (single source of truth). */
+object RelationshipTags {
+    val ALL: List<String> get() = Relationship.entries.map { it.key }
+    fun label(tag: String) = Relationship.entries.firstOrNull { it.key == tag }?.en ?: tag
+}
+
 /**
- * What to do with calls of one group (a caller type) or one contact. Contact policies override the group policy.
- * Retention values are days; -1 = keep forever.
+ * What to do with calls of one target: a caller type, an AI relationship tag, or one contact.
+ * Exactly one target field is set. The most specific matching policy wins as a whole (see docs/plans/policies.md).
+ * Retention values are days; [FOREVER] = keep forever; cloud may also be [SAME_AS_LOCAL].
  */
 @Entity(tableName = "policies")
 data class PolicyEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    /** Group policies have [groupKind] set; contact policies have [displayName]/[numbers]. */
+    /** Caller-type target. */
     val groupKind: LabelKind? = null,
+    /** Contact target: name and/or comma-separated normalized numbers (last 9 digits). */
     val displayName: String = "",
-    /** Comma-separated normalized numbers (last 9 digits). */
     val numbers: String = "",
     val transcribe: Boolean,
     val summarize: Boolean,
-    val audioRetentionDays: Int = -1,
-    val textRetentionDays: Int = -1,
+    val audioRetentionDays: Int = FOREVER,
+    val textRetentionDays: Int = FOREVER,
+    /** Tag target, one of [RelationshipTags.ALL]. */
+    val tag: String? = null,
+    /** Retention of the Drive backup copy (audio and text). Used once Drive backup exists. */
+    @ColumnInfo(defaultValue = "-2") val cloudRetentionDays: Int = SAME_AS_LOCAL,
 ) {
+    val target: PolicyTarget get() = when {
+        groupKind != null -> PolicyTarget.CALLER_TYPE
+        tag != null -> PolicyTarget.TAG
+        else -> PolicyTarget.CONTACT
+    }
     val isGroup get() = groupKind != null
 
     companion object {
+        const val FOREVER = -1
+        const val SAME_AS_LOCAL = -2
+
         fun defaultFor(kind: LabelKind) = PolicyEntity(
             groupKind = kind,
             transcribe = kind != LabelKind.CONTACT,

@@ -55,7 +55,7 @@ interface RecordingDao {
 
 @Dao
 interface PolicyDao {
-    @Query("SELECT * FROM policies ORDER BY groupKind IS NULL, displayName")
+    @Query("SELECT * FROM policies ORDER BY groupKind IS NULL, tag IS NULL, tag, displayName")
     fun observeAll(): Flow<List<PolicyEntity>>
 
     @Query("SELECT * FROM policies")
@@ -78,7 +78,16 @@ interface PolicyDao {
     }
 }
 
-@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 4, exportSchema = true)
+/** Migration SQL kept as plain strings so unit tests can run it on SQLite without Android. */
+object PolicyMigrations {
+    /** v4 → v5 (was 2→3 on the policies branch before the merge renumbering). */
+    val SQL_4_5 = listOf(
+        "ALTER TABLE policies ADD COLUMN tag TEXT",
+        "ALTER TABLE policies ADD COLUMN cloudRetentionDays INTEGER NOT NULL DEFAULT -2",
+    )
+}
+
+@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 5, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun recordings(): RecordingDao
     abstract fun policies(): PolicyDao
@@ -119,9 +128,16 @@ abstract class AppDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) = MIGRATION_3_4_SQL.forEach(db::execSQL)
         }
 
+        /** v4 → v5: policies gain a tag target and cloud retention. Add-only: every existing policy is kept as is. */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                PolicyMigrations.SQL_4_5.forEach(db::execSQL)
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "callscribe.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

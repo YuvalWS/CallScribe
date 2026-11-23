@@ -43,13 +43,24 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
 import app.callscribe.data.LabelKind
 import app.callscribe.data.PolicyEntity
+import app.callscribe.data.PolicyTarget
+import app.callscribe.data.RelationshipTags
 import app.callscribe.pipeline.RetentionWorker
 import app.callscribe.rules.PhoneNumbers
+import app.callscribe.rules.PolicyChecks
 import app.callscribe.rules.RetentionPlan
 import kotlinx.coroutines.launch
 
 private val RETENTION_CHOICES = listOf(-1, 1, 7, 30, 90, 180, 365)
-private fun retentionLabel(d: Int) = when (d) { -1 -> "Keep forever"; 1 -> "1 day"; 365 -> "1 year"; else -> "$d days" }
+private fun retentionLabel(d: Int) = when (d) { -1 -> "Forever"; 1 -> "1 day"; 365 -> "1 year"; else -> "$d days" }
+
+/** Cloud choice label; "same as phone" shows what it resolves to, e.g. "Same as phone (forever)". */
+internal fun cloudLabel(p: PolicyEntity) =
+    if (p.cloudRetentionDays == PolicyEntity.SAME_AS_LOCAL) "Same as phone (${retentionLabel(p.audioRetentionDays).lowercase()})"
+    else retentionLabel(p.cloudRetentionDays)
+
+/** Tag policies need the AI relationship tag on recordings (another branch). Flip on once it lands. */
+private const val TAG_POLICIES_ENABLED = false
 
 private fun groupTitle(k: LabelKind) = when (k) {
     LabelKind.SPAM -> "Labelled spam by Samsung"
@@ -90,8 +101,9 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
         val st = s ?: return@Page
         SwitchRow("Process new calls automatically", st.autoEnabled) { v -> scope.launch { graph.settings.update { it.copy(autoEnabled = v) } } }
         Text(
-            "For each kind of caller (and for specific contacts) choose whether new calls are transcribed and summarized " +
-                "automatically, and how long to keep the recording and its text. A contact's own policy overrides its group. " +
+            "Choose per caller type or contact whether new calls are transcribed and summarized automatically, and how " +
+                "long to keep them. Each call follows exactly one policy, the most specific that matches: contact, then " +
+                "relationship tag, then caller type. Calls marked \"keep forever\" are never deleted. " +
                 "Any call can still be processed manually.",
             style = MaterialTheme.typography.bodySmall,
         )
@@ -105,6 +117,22 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
             }
         }
         HorizontalDivider()
+
+        if (TAG_POLICIES_ENABLED) {
+            Section("Relationship tags (set by AI)")
+            Text("Retention only: tags are known after a call is analyzed. A tag policy beats the caller type.", style = MaterialTheme.typography.bodySmall)
+            RelationshipTags.ALL.forEach { t ->
+                val p = policies.firstOrNull { it.tag == t }
+                if (p != null) PolicyCard(
+                    RelationshipTags.label(t), p,
+                    onChange = { scope.launch { graph.db.policies().update(it) } },
+                    onDelete = { scope.launch { graph.db.policies().delete(p.id) } },
+                ) else TextButton(onClick = {
+                    scope.launch { graph.db.policies().insert(PolicyEntity(tag = t, transcribe = true, summarize = true)) }
+                }) { Text("+ Policy for \"${RelationshipTags.label(t)}\"") }
+            }
+            HorizontalDivider()
+        }
 
         Section("Specific contacts")
         val contacts = policies.filter { !it.isGroup }
@@ -137,13 +165,19 @@ private fun PolicyCard(
                 }
                 if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Remove") }
             }
-            CheckRow("Transcribe automatically", p.transcribe) { onChange(p.copy(transcribe = it, summarize = p.summarize && it)) }
-            CheckRow("Summarize & judge spam", p.summarize, enabled = p.transcribe) { onChange(p.copy(summarize = it)) }
-            DaysRow("Keep recording", p.audioRetentionDays) { onChange(p.copy(audioRetentionDays = it)) }
+            if (p.target != PolicyTarget.TAG) {
+                CheckRow("Transcribe automatically", p.transcribe) { onChange(p.copy(transcribe = it, summarize = p.summarize && it)) }
+                CheckRow("Summarize & judge spam", p.summarize, enabled = p.transcribe) { onChange(p.copy(summarize = it)) }
+            }
+            DaysRow("Keep recording on phone", p.audioRetentionDays) { onChange(p.copy(audioRetentionDays = it)) }
             CheckRow("Also delete transcript & summary", p.textRetentionDays >= 0) {
                 onChange(p.copy(textRetentionDays = if (it) maxOf(p.audioRetentionDays, 30) else -1))
             }
             if (p.textRetentionDays >= 0) DaysRow("Keep text", p.textRetentionDays, allowForever = false) { onChange(p.copy(textRetentionDays = it)) }
+            CloudRow(p) { onChange(p.copy(cloudRetentionDays = it)) }
+            PolicyChecks.warnings(p).forEach {
+                Text("\u26A0 $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
+            }
         }
     }
 }
@@ -157,6 +191,26 @@ private fun DaysRow(label: String, days: Int, allowForever: Boolean = true, onPi
             TextButton(onClick = { open = true }) { Text(retentionLabel(days)) }
             DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                 RETENTION_CHOICES.filter { allowForever || it >= 0 }.forEach { d ->
+                    DropdownMenuItem(text = { Text(retentionLabel(d)) }, onClick = { open = false; onPick(d) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CloudRow(p: PolicyEntity, onPick: (Int) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Keep in cloud backup")
+            Text("Applies when Drive backup is on", style = MaterialTheme.typography.bodySmall)
+        }
+        Column {
+            TextButton(onClick = { open = true }) { Text(cloudLabel(p)) }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                DropdownMenuItem(text = { Text("Same as phone") }, onClick = { open = false; onPick(PolicyEntity.SAME_AS_LOCAL) })
+                RETENTION_CHOICES.forEach { d ->
                     DropdownMenuItem(text = { Text(retentionLabel(d)) }, onClick = { open = false; onPick(d) })
                 }
             }
