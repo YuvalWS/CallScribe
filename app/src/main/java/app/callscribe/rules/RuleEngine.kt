@@ -1,5 +1,6 @@
 package app.callscribe.rules
 
+import app.callscribe.data.CallerType
 import app.callscribe.data.LabelKind
 import app.callscribe.data.PolicyEntity
 import app.callscribe.data.PolicyTarget
@@ -28,22 +29,61 @@ object Names {
 fun RecordingEntity.keptForever(): Boolean = keepForever
 fun RecordingEntity.aiTag(): String? = relationship?.key
 
-/** Which policy governs a call, and why. */
-data class Resolution(val policy: PolicyEntity, val level: Level) {
-    enum class Level { CONTACT, TAG, CALLER_TYPE, DEFAULT }
+/**
+ * Which contact groups each contact is in, keyed by normalized name and by normalized number.
+ * Built from the phone's contacts by [app.callscribe.detect.ContactGroupsReader]; empty without the permission.
+ */
+class ContactGroupIndex(
+    private val byName: Map<String, Set<String>> = emptyMap(),
+    private val byNumber: Map<String, Set<String>> = emptyMap(),
+) {
+    /** Samsung puts the contact's name in the file name, or the number when it isn't a contact. */
+    fun groupsOf(counterparty: String?): Set<String> {
+        if (counterparty == null) return emptySet()
+        byName[Names.normalize(counterparty)]?.let { return it }
+        val n = PhoneNumbers.normalize(counterparty) ?: return emptySet()
+        return byNumber[n].orEmpty()
+    }
+
+    val isEmpty get() = byName.isEmpty() && byNumber.isEmpty()
+
+    companion object {
+        val EMPTY = ContactGroupIndex()
+
+        /** One entry per contact: display name, its numbers and its group titles. */
+        fun of(contacts: List<Triple<String, List<String>, Set<String>>>): ContactGroupIndex {
+            val byName = mutableMapOf<String, MutableSet<String>>()
+            val byNumber = mutableMapOf<String, MutableSet<String>>()
+            for ((name, numbers, groups) in contacts) {
+                if (groups.isEmpty()) continue
+                if (name.isNotBlank()) byName.getOrPut(Names.normalize(name)) { mutableSetOf() } += groups
+                numbers.mapNotNull(PhoneNumbers::normalize).forEach { byNumber.getOrPut(it) { mutableSetOf() } += groups }
+            }
+            return ContactGroupIndex(byName, byNumber)
+        }
+    }
+}
+
+/** Which policy governs a call, and why. [alsoIn] = other matching contact groups with lower priority. */
+data class Resolution(val policy: PolicyEntity, val level: Level, val alsoIn: List<String> = emptyList()) {
+    enum class Level { CONTACT, CONTACT_GROUP, TAG, CALLER_TYPE, DEFAULT }
 
     /** Plain-language reason, shown on the call page. */
-    fun reason(kindLabel: (LabelKind) -> String = { it.name }): String = when (level) {
-        Level.CONTACT -> "Contact policy \"${policy.displayName.ifBlank { "…" + policy.numbers }}\" — a contact's own policy beats tag and caller type"
+    fun reason(typeLabel: (CallerType) -> String = { it.name }): String = when (level) {
+        Level.CONTACT -> "Contact policy \"${policy.displayName.ifBlank { "…" + policy.numbers }}\" — a contact's own policy beats everything else"
+        Level.CONTACT_GROUP -> "Contact group \"${policy.contactGroup}\"" +
+            (if (alsoIn.isEmpty()) "" else " (also in ${alsoIn.joinToString()}, lower priority)") +
+            " — a group beats tag and caller type"
         Level.TAG -> "Tag policy \"${RelationshipTags.label(policy.tag.orEmpty())}\" — a tag beats the caller type"
-        Level.CALLER_TYPE -> "Caller-type policy \"${policy.groupKind?.let(kindLabel)}\" — no contact or tag policy matches this call"
+        Level.CALLER_TYPE -> "Caller type \"${policy.callerType?.let(typeLabel)}\" — no contact, group or tag policy matches this call"
         Level.DEFAULT -> "Built-in default — no policy matches this call"
     }
 }
 
 /**
- * Picks the policy for a call. Fixed precedence: contact > tag > caller type > built-in default.
+ * Picks the policy for a call. Fixed precedence: contact > contact group > tag > caller type > built-in default.
  * The single most specific matching policy wins as a whole — fields are never merged across policies.
+ * Among contact groups, the lowest [PolicyEntity.priority] wins.
  * The same resolution drives automatic processing and retention.
  */
 object PolicyResolver {
@@ -55,25 +95,33 @@ object PolicyResolver {
         return policy.numbers.split(',').any { it.isNotBlank() && it == n }
     }
 
-    fun explain(kind: LabelKind, counterparty: String?, tag: String?, policies: List<PolicyEntity>): Resolution {
+    fun explain(
+        kind: LabelKind, counterparty: String?, tag: String?, policies: List<PolicyEntity>, groups: Set<String> = emptySet(),
+    ): Resolution {
         policies.firstOrNull { matches(it, counterparty) }?.let { return Resolution(it, Resolution.Level.CONTACT) }
+        val groupHits = policies.filter { it.target == PolicyTarget.CONTACT_GROUP && it.contactGroup in groups }
+            .sortedWith(compareBy({ it.priority }, { it.id }))
+        if (groupHits.isNotEmpty()) {
+            return Resolution(groupHits[0], Resolution.Level.CONTACT_GROUP, groupHits.drop(1).mapNotNull { it.contactGroup })
+        }
         if (tag != null) policies.firstOrNull { it.target == PolicyTarget.TAG && it.tag == tag }
             ?.let { return Resolution(it, Resolution.Level.TAG) }
-        policies.firstOrNull { it.groupKind == kind }?.let { return Resolution(it, Resolution.Level.CALLER_TYPE) }
-        return Resolution(PolicyEntity.defaultFor(kind), Resolution.Level.DEFAULT)
+        val type = CallerType.of(kind)
+        policies.firstOrNull { it.callerType == type }?.let { return Resolution(it, Resolution.Level.CALLER_TYPE) }
+        return Resolution(PolicyEntity.defaultFor(type), Resolution.Level.DEFAULT)
     }
 
-    fun resolve(kind: LabelKind, counterparty: String?, policies: List<PolicyEntity>, tag: String? = null): PolicyEntity =
-        explain(kind, counterparty, tag, policies).policy
+    fun resolve(
+        kind: LabelKind, counterparty: String?, policies: List<PolicyEntity>, tag: String? = null, groups: Set<String> = emptySet(),
+    ): PolicyEntity = explain(kind, counterparty, tag, policies, groups).policy
 
     /** For retention and display: uses the AI tag when the call has one. */
-    fun explain(r: RecordingEntity, policies: List<PolicyEntity>, tag: String? = r.aiTag()) =
-        explain(r.labelKind, r.counterparty, tag, policies)
+    fun explain(r: RecordingEntity, policies: List<PolicyEntity>, groups: ContactGroupIndex, tag: String? = r.aiTag()) =
+        explain(r.labelKind, r.counterparty, tag, policies, groups.groupsOf(r.counterparty))
 
-    fun resolve(r: RecordingEntity, policies: List<PolicyEntity>, tag: String? = r.aiTag()) = explain(r, policies, tag).policy
-
-    /** For auto-processing a new call: the tag is not known before analysis, so only contact > caller type apply. */
-    fun forProcessing(r: RecordingEntity, policies: List<PolicyEntity>) = resolve(r, policies, tag = null)
+    /** For auto-processing a new call: the tag is not known before analysis, so it is ignored. */
+    fun forProcessing(r: RecordingEntity, policies: List<PolicyEntity>, groups: ContactGroupIndex) =
+        explain(r, policies, groups, tag = null).policy
 }
 
 /** Cloud (Drive backup) retention. "Same as local" = the cloud copy goes once the phone copy has actually been deleted. */
@@ -109,6 +157,7 @@ object Retention {
         policies: List<PolicyEntity>,
         nowSec: Long,
         keptForever: (RecordingEntity) -> Boolean = { it.keptForever() },
+        groups: ContactGroupIndex = ContactGroupIndex.EMPTY,
         tagOf: (RecordingEntity) -> String? = { it.aiTag() },
         cloudDays: (PolicyEntity) -> Int = { it.cloudRetentionDays },
     ): RetentionPlan {
@@ -118,7 +167,7 @@ object Retention {
         val cloudText = mutableListOf<RecordingEntity>()
         for (r in rows) {
             if (keptForever(r)) continue
-            val p = PolicyResolver.resolve(r, policies, tagOf(r))
+            val p = PolicyResolver.explain(r, policies, groups, tagOf(r)).policy
             val age = nowSec - r.callTimeSec
             if (due(p.audioRetentionDays, age) && !r.fileMissing && r.audioDeletedAt == null) audio += r
             val hasText = r.transcriptText != null || r.summary != null

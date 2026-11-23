@@ -1,5 +1,6 @@
 package app.callscribe.ui
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
@@ -14,8 +15,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
@@ -41,7 +47,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
-import app.callscribe.data.LabelKind
+import app.callscribe.data.CallerType
 import app.callscribe.data.PolicyEntity
 import app.callscribe.data.PolicyTarget
 import app.callscribe.data.RelationshipTags
@@ -62,13 +68,11 @@ internal fun cloudLabel(p: PolicyEntity) =
 /** Tag policies need the AI relationship tag on recordings (another branch). Flip on once it lands. */
 private const val TAG_POLICIES_ENABLED = false
 
-private fun groupTitle(k: LabelKind) = when (k) {
-    LabelKind.SPAM -> "Labelled spam by Samsung"
-    LabelKind.FRAUD -> "Labelled fraud by Samsung"
-    LabelKind.OTHER_LABEL -> "Other Samsung labels"
-    LabelKind.UNKNOWN_NUMBER -> "Unknown numbers"
-    LabelKind.PRIVATE -> "Private / hidden numbers"
-    LabelKind.CONTACT -> "Contacts (default for all contacts)"
+internal fun callerTypeTitle(t: CallerType) = when (t) {
+    CallerType.CONTACT -> "Contacts (default for all contacts)"
+    CallerType.UNKNOWN_NUMBER -> "Unknown numbers (incl. Samsung's business / telemarketing labels)"
+    CallerType.PRIVATE -> "Private / hidden numbers"
+    CallerType.SPAM_FRAUD -> "Spam or fraud (labelled by Samsung)"
 }
 
 @Composable
@@ -78,6 +82,10 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     LaunchedEffect(Unit) { graph.db.policies().ensureGroupDefaults() }
+    val save: (PolicyEntity) -> Unit = { p -> scope.launch { graph.db.policies().update(p) } }
+    val remove: (PolicyEntity) -> Unit = { p -> scope.launch { graph.db.policies().delete(p.id) } }
+    /** New, more specific policies start from what applied before: the Contacts caller type. */
+    val contactBase = policies.firstOrNull { it.callerType == CallerType.CONTACT } ?: PolicyEntity.defaultFor(CallerType.CONTACT)
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         val uri = res.data?.data
@@ -89,32 +97,41 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
             if (c.moveToFirst()) {
                 val name = c.getString(0) ?: return@use
                 val num = PhoneNumbers.normalize(c.getString(1) ?: "").orEmpty()
-                val base = policies.firstOrNull { it.groupKind == LabelKind.CONTACT } ?: PolicyEntity.defaultFor(LabelKind.CONTACT)
                 scope.launch {
-                    graph.db.policies().insert(base.copy(id = 0, groupKind = null, displayName = name, numbers = num, transcribe = true, summarize = true))
+                    graph.db.policies().insert(contactBase.copy(id = 0, callerType = null, displayName = name, numbers = num, transcribe = true, summarize = true))
                 }
             }
         }
+    }
+
+    // Contact groups need READ_CONTACTS, asked only when the user adds the first group policy.
+    var hasContacts by remember { mutableStateOf(graph.contactGroups.hasPermission()) }
+    var groupChoices by remember { mutableStateOf<List<String>?>(null) }
+    val askContacts = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        hasContacts = granted
+        if (granted) scope.launch { groupChoices = graph.contactGroups.titles() }
+    }
+    val groupPolicies = policies.filter { it.target == PolicyTarget.CONTACT_GROUP }.sortedWith(compareBy({ it.priority }, { it.id }))
+    fun move(from: Int, to: Int) = scope.launch {
+        val list = groupPolicies.toMutableList().apply { add(to, removeAt(from)) }
+        list.forEachIndexed { i, p -> if (p.priority != i) graph.db.policies().update(p.copy(priority = i)) }
     }
 
     Page("Policies", onBack) {
         val st = s ?: return@Page
         SwitchRow("Process new calls automatically", st.autoEnabled) { v -> scope.launch { graph.settings.update { it.copy(autoEnabled = v) } } }
         Text(
-            "Choose per caller type or contact whether new calls are transcribed and summarized automatically, and how " +
-                "long to keep them. Each call follows exactly one policy, the most specific that matches: contact, then " +
-                "relationship tag, then caller type. Calls marked \"keep forever\" are never deleted. " +
-                "Any call can still be processed manually.",
+            "Choose whether new calls are transcribed and summarized automatically, and how long to keep them. " +
+                "Each call follows exactly one policy, the most specific that matches: contact, then contact group, " +
+                "then caller type. Calls marked \"keep forever\" are never deleted. Any call can still be processed manually.",
             style = MaterialTheme.typography.bodySmall,
         )
         OutlinedButton(onClick = onRetention) { Text("Review retention now") }
         HorizontalDivider()
 
         Section("Caller types")
-        LabelKind.entries.forEach { k ->
-            policies.firstOrNull { it.groupKind == k }?.let { p ->
-                PolicyCard(groupTitle(k), p, onChange = { scope.launch { graph.db.policies().update(it) } })
-            }
+        CallerType.entries.forEach { t ->
+            policies.firstOrNull { it.callerType == t }?.let { p -> PolicyCard(callerTypeTitle(t), p, onChange = save) }
         }
         HorizontalDivider()
 
@@ -123,31 +140,78 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
             Text("Retention only: tags are known after a call is analyzed. A tag policy beats the caller type.", style = MaterialTheme.typography.bodySmall)
             RelationshipTags.ALL.forEach { t ->
                 val p = policies.firstOrNull { it.tag == t }
-                if (p != null) PolicyCard(
-                    RelationshipTags.label(t), p,
-                    onChange = { scope.launch { graph.db.policies().update(it) } },
-                    onDelete = { scope.launch { graph.db.policies().delete(p.id) } },
-                ) else TextButton(onClick = {
-                    scope.launch { graph.db.policies().insert(PolicyEntity(tag = t, transcribe = true, summarize = true)) }
+                if (p != null) PolicyCard(RelationshipTags.label(t), p, onChange = save, onDelete = { remove(p) })
+                else TextButton(onClick = {
+                    scope.launch { graph.db.policies().insert(contactBase.copy(id = 0, callerType = null, tag = t)) }
                 }) { Text("+ Policy for \"${RelationshipTags.label(t)}\"") }
             }
             HorizontalDivider()
         }
 
+        Section("Contact groups")
+        Text(
+            "Groups from your phone's contacts (Samsung groups and Google Contacts labels). A group beats the caller type. " +
+                "If someone is in several groups, the higher one in this list wins.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (groupPolicies.isNotEmpty() && !hasContacts) {
+            Text(
+                "Contacts access is off, so these group policies don't apply.",
+                color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall,
+            )
+            TextButton(onClick = { askContacts.launch(Manifest.permission.READ_CONTACTS) }) { Text("Allow contacts access") }
+        }
+        groupPolicies.forEachIndexed { i, p ->
+            PolicyCard(
+                p.contactGroup.orEmpty(), p, subtitle = "Priority ${i + 1}", onChange = save, onDelete = { remove(p) },
+                onUp = if (i > 0) ({ move(i, i - 1) }) else null,
+                onDown = if (i < groupPolicies.lastIndex) ({ move(i, i + 1) }) else null,
+            )
+        }
+        TextButton(onClick = {
+            if (hasContacts) scope.launch { groupChoices = graph.contactGroups.titles() }
+            else askContacts.launch(Manifest.permission.READ_CONTACTS)
+        }) { Text("+ Add contact group") }
+        HorizontalDivider()
+
         Section("Specific contacts")
-        val contacts = policies.filter { !it.isGroup }
+        Text("A contact's own policy beats everything else.", style = MaterialTheme.typography.bodySmall)
+        val contacts = policies.filter { it.target == PolicyTarget.CONTACT }
         if (contacts.isEmpty()) Text("None yet. Add a contact, or use the buttons on a call's page.", style = MaterialTheme.typography.bodySmall)
         contacts.forEach { p ->
             PolicyCard(
                 p.displayName.ifBlank { "…" + p.numbers }, p,
                 subtitle = p.numbers.takeIf { it.isNotBlank() }?.let { "…$it" },
-                onChange = { scope.launch { graph.db.policies().update(it) } },
-                onDelete = { scope.launch { graph.db.policies().delete(p.id) } },
+                onChange = save, onDelete = { remove(p) },
             )
         }
         TextButton(onClick = { picker.launch(Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)) }) {
             Text("+ Add contact")
         }
+    }
+
+    groupChoices?.let { all ->
+        val used = groupPolicies.mapNotNull { it.contactGroup }.toSet()
+        val free = all.filter { it !in used }
+        AlertDialog(
+            onDismissRequest = { groupChoices = null },
+            title = { Text("Add contact group") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    if (free.isEmpty()) Text(if (all.isEmpty()) "No contact groups found on this phone." else "All groups already have a policy.")
+                    free.forEach { title ->
+                        TextButton(onClick = {
+                            groupChoices = null
+                            val next = (groupPolicies.maxOfOrNull { it.priority } ?: -1) + 1
+                            scope.launch {
+                                graph.db.policies().insert(contactBase.copy(id = 0, callerType = null, contactGroup = title, priority = next))
+                            }
+                        }) { Text(title) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { groupChoices = null }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -155,6 +219,7 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
 private fun PolicyCard(
     title: String, p: PolicyEntity, subtitle: String? = null,
     onChange: (PolicyEntity) -> Unit, onDelete: (() -> Unit)? = null,
+    onUp: (() -> Unit)? = null, onDown: (() -> Unit)? = null,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -163,6 +228,8 @@ private fun PolicyCard(
                     Text(title, fontWeight = FontWeight.Bold)
                     subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 }
+                if (onUp != null) IconButton(onClick = onUp) { Icon(Icons.Default.KeyboardArrowUp, "Higher priority") }
+                if (onDown != null) IconButton(onClick = onDown) { Icon(Icons.Default.KeyboardArrowDown, "Lower priority") }
                 if (onDelete != null) IconButton(onClick = onDelete) { Icon(Icons.Default.Delete, "Remove") }
             }
             if (p.target != PolicyTarget.TAG) {

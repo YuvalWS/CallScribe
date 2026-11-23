@@ -42,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -63,6 +64,7 @@ import app.callscribe.pipeline.ProcessWorker
 import app.callscribe.providers.AnalysisPrompt
 import app.callscribe.providers.Segment
 import app.callscribe.rules.PhoneNumbers
+import app.callscribe.rules.ContactGroupIndex
 import app.callscribe.rules.PolicyResolver
 import app.callscribe.rules.keptForever
 import kotlinx.coroutines.delay
@@ -247,12 +249,13 @@ private fun CostCard(r: RecordingEntity) {
 private fun CallerRules(graph: AppGraph, r: RecordingEntity, onPolicies: () -> Unit) {
     val scope = rememberCoroutineScope()
     val policies by graph.db.policies().observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
-    val resolution = PolicyResolver.explain(r, policies)
+    val groups by produceState(ContactGroupIndex.EMPTY) { value = graph.contactGroups.index() }
+    val resolution = PolicyResolver.explain(r, policies, groups)
     val effective = resolution.policy
     val own = policies.firstOrNull { PolicyResolver.matches(it, r.counterparty) }
     Column {
         Text("Policy for this call", fontWeight = FontWeight.Bold)
-        Text(resolution.reason { Fmt.label(it) }, style = MaterialTheme.typography.bodySmall)
+        Text(resolution.reason { callerTypeTitle(it) }, style = MaterialTheme.typography.bodySmall)
         val days = { d: Int -> if (d < 0) "forever" else "$d days" }
         val what = (if (effective.transcribe) "transcribe" else "don't transcribe") +
             (if (effective.transcribe && effective.summarize) " + summarize" else "")
@@ -277,7 +280,7 @@ private suspend fun setCallerPolicy(graph: AppGraph, counterparty: String, own: 
     } else {
         graph.db.policies().insert(
             base.copy(
-                id = 0, groupKind = null, tag = null, displayName = counterparty,
+                id = 0, callerType = null, tag = null, contactGroup = null, priority = 0, displayName = counterparty,
                 numbers = PhoneNumbers.normalize(counterparty).orEmpty(), transcribe = process, summarize = process,
             )
         )

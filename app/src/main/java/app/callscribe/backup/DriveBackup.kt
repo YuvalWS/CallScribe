@@ -131,7 +131,11 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
 
     // ---- running ----
 
-    private fun engine() = DriveBackupEngine(DriveRestApi(auth::token))
+    /** Contact groups feed the cloud-retention plan so group policies apply to the Drive copy too. */
+    private suspend fun engine(): DriveBackupEngine {
+        val groups = graph.contactGroups.index()
+        return DriveBackupEngine(DriveRestApi(auth::token), planner = { r, p, now -> app.callscribe.rules.Retention.plan(r, p, now, groups = groups) })
+    }
 
     /** [restoreFrom] null = back up; otherwise restore from that phone's backup. */
     /** True while a backup or restore runs (for the "Backing up" status). */

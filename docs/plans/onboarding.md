@@ -26,8 +26,11 @@ Bottom bar on every step: Back · Skip (if skippable) · Next. A thin progress b
 
 ### Starting policy mapping (kept thin — policies are being redesigned elsewhere)
 Pure function `StartingPolicy.apply(choice, policies)` (unit-tested):
-- **Automatic**: `autoEnabled = true`; group policies SPAM, FRAUD, OTHER_LABEL, UNKNOWN_NUMBER, PRIVATE → `transcribe = true`;
-  CONTACT → `transcribe = false`. Contact policies untouched.
+- **Automatic**: `autoEnabled = true`; caller-type policies SPAM_FRAUD, UNKNOWN_NUMBER, PRIVATE → `transcribe = true`;
+  CONTACT → `transcribe = false`. Contact and contact-group policies untouched.
+
+`READ_CONTACTS` (contact-group policies) is deliberately **not** an onboarding step: it is optional and asked
+in context, when the user adds the first contact-group policy on the Policies screen.
 - **Manual only**: `autoEnabled = false`; group policies untouched.
 - Only written when the user picks an option; skipping changes nothing. Preselection: `autoEnabled` false → Manual, else Automatic.
 

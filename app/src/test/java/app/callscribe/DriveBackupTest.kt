@@ -10,6 +10,7 @@ import app.callscribe.backup.DriveFile
 import app.callscribe.backup.RestoreSink
 import app.callscribe.backup.UploadContent
 import app.callscribe.data.AppSettings
+import app.callscribe.data.CallerType
 import app.callscribe.data.LabelKind
 import app.callscribe.data.PolicyEntity
 import app.callscribe.data.RecordingEntity
@@ -91,7 +92,7 @@ class DriveBackupTest {
         transcriptText = text, status = if (text != null) Status.TRANSCRIBED else Status.NOT_TRANSCRIBED,
     )
 
-    private class Source(var rows: List<RecordingEntity>, var policies: List<PolicyEntity> = LabelKind.entries.map { PolicyEntity.defaultFor(it) }) : BackupSource {
+    private class Source(var rows: List<RecordingEntity>, var policies: List<PolicyEntity> = CallerType.entries.map { PolicyEntity.defaultFor(it) }) : BackupSource {
         var settings = AppSettings(runpodEndpointId = "ep1", geminiModel = "g")
         val opened = mutableListOf<String>()
         override suspend fun recordings() = rows
@@ -177,7 +178,7 @@ class DriveBackupTest {
         val due = rec(1, ageDays = 40)
         val deleted = rec(2, ageDays = 40).copy(audioDeletedAt = 123)
         val textGone = rec(3, ageDays = 40, text = null).copy(textDeletedAt = 456)
-        val policies = listOf(PolicyEntity.defaultFor(LabelKind.UNKNOWN_NUMBER).copy(audioRetentionDays = 30))
+        val policies = listOf(PolicyEntity.defaultFor(CallerType.UNKNOWN_NUMBER).copy(audioRetentionDays = 30))
         val plan = Retention.plan(listOf(due, deleted, textGone), policies, now)
         // Due locally but not yet deleted (awaiting confirmation): cloud copy stays.
         assertEquals(listOf(rec(1).contentHash, rec(3).contentHash), plan.trashAudio.map { it.contentHash })
@@ -240,7 +241,7 @@ class DriveBackupTest {
     @Test fun restoreOnNewPhoneRelinksByHash() = runBlocking {
         val drive = FakeDriveApi()
         val custom = PolicyEntity(displayName = "Mom", numbers = "501234567", transcribe = false, summarize = false)
-        val old = Source(listOf(rec(1).copy(summary = "Loan offer", verdict = "spam"), rec(2)), LabelKind.entries.map { PolicyEntity.defaultFor(it) } + custom)
+        val old = Source(listOf(rec(1).copy(summary = "Loan offer", verdict = "spam"), rec(2)), CallerType.entries.map { PolicyEntity.defaultFor(it) } + custom)
         DriveBackupEngine(drive, ZoneOffset.UTC).backup(dev, old, true, now)
 
         // New phone: call 2 already scanned (no transcript), call 1 not on this phone.

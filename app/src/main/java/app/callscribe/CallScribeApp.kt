@@ -6,6 +6,7 @@ import app.callscribe.data.AppDatabase
 import app.callscribe.data.RecordingEntity
 import app.callscribe.data.SecretStore
 import app.callscribe.data.SettingsRepository
+import app.callscribe.detect.ContactGroupsReader
 import app.callscribe.detect.RecordingScanner
 import app.callscribe.detect.RecordingStore
 import app.callscribe.detect.SyncEngine
@@ -28,6 +29,7 @@ class AppGraph(context: Context) {
     val notifier = Notifier(context)
     /** Optional Google Drive backup (off by default). */
     val drive by lazy { app.callscribe.backup.DriveBackup(context.applicationContext, this) }
+    val contactGroups = ContactGroupsReader(context)
 
     private val syncMutex = Mutex()
     private val store = object : RecordingStore {

@@ -1,6 +1,6 @@
 package app.callscribe.ui
 
-import app.callscribe.data.LabelKind
+import app.callscribe.data.CallerType
 import app.callscribe.data.PolicyEntity
 
 /**
@@ -70,8 +70,8 @@ enum class StartingPolicy(val title: String, val detail: String) {
         fun groupUpdates(choice: StartingPolicy, policies: List<PolicyEntity>): List<PolicyEntity> = when (choice) {
             MANUAL -> emptyList()
             AUTOMATIC -> policies.mapNotNull { p ->
-                val kind = p.groupKind ?: return@mapNotNull null
-                val want = kind != LabelKind.CONTACT
+                val kind = p.callerType ?: return@mapNotNull null
+                val want = kind != CallerType.CONTACT
                 if (p.transcribe == want) null else p.copy(transcribe = want)
             }
         }

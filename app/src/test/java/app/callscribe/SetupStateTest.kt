@@ -1,6 +1,6 @@
 package app.callscribe
 
-import app.callscribe.data.LabelKind
+import app.callscribe.data.CallerType
 import app.callscribe.data.PolicyEntity
 import app.callscribe.ui.SetupStatus
 import app.callscribe.ui.SetupStep
@@ -50,14 +50,14 @@ class SetupStateTest {
         assertTrue(all.copy(analyzerConfigured = false, batteryUnrestricted = false, recordingCount = 0).missingRequired().isEmpty())
     }
 
-    private fun groups(transcribe: Boolean) = LabelKind.entries.mapIndexed { i, k ->
-        PolicyEntity(id = i + 1L, groupKind = k, transcribe = transcribe, summarize = true)
+    private fun groups(transcribe: Boolean) = CallerType.entries.mapIndexed { i, k ->
+        PolicyEntity(id = i + 1L, callerType = k, transcribe = transcribe, summarize = true)
     }
 
     @Test fun automaticPolicyTurnsOnNonContactGroups() {
         val contact = PolicyEntity(id = 99, displayName = "Mom", numbers = "541234567", transcribe = false, summarize = false)
         val updates = StartingPolicy.groupUpdates(StartingPolicy.AUTOMATIC, groups(false) + contact)
-        assertEquals(LabelKind.entries.filter { it != LabelKind.CONTACT }.toSet(), updates.map { it.groupKind }.toSet())
+        assertEquals(CallerType.entries.filter { it != CallerType.CONTACT }.toSet(), updates.map { it.callerType }.toSet())
         assertTrue(updates.all { it.transcribe && it.summarize })
         assertTrue(StartingPolicy.autoEnabled(StartingPolicy.AUTOMATIC))
     }
@@ -65,7 +65,7 @@ class SetupStateTest {
     @Test fun automaticPolicyTurnsOffContactsGroup() {
         val updates = StartingPolicy.groupUpdates(StartingPolicy.AUTOMATIC, groups(true))
         assertEquals(1, updates.size)
-        assertEquals(LabelKind.CONTACT, updates[0].groupKind)
+        assertEquals(CallerType.CONTACT, updates[0].callerType)
         assertFalse(updates[0].transcribe)
     }
 

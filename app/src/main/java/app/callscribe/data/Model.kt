@@ -76,8 +76,25 @@ data class RecordingEntity(
     val totalCostUsd: Double get() = (transcriptionCostUsd ?: 0.0) + (analysisCostUsd ?: 0.0)
 }
 
-/** What a policy applies to. Precedence when several match a call: CONTACT > TAG > CALLER_TYPE (> built-in default). */
-enum class PolicyTarget { CONTACT, TAG, CALLER_TYPE }
+/** What a policy applies to. Precedence when several match a call: CONTACT > CONTACT_GROUP > TAG > CALLER_TYPE (> default). */
+enum class PolicyTarget { CONTACT, CONTACT_GROUP, TAG, CALLER_TYPE }
+
+/**
+ * Caller types for policies: a simplification of Samsung's labels ([LabelKind], still shown in the list).
+ * Spam and fraud are one type; Samsung's other labels (telemarketing, business, ...) count as unknown numbers.
+ */
+enum class CallerType {
+    CONTACT, UNKNOWN_NUMBER, PRIVATE, SPAM_FRAUD;
+
+    companion object {
+        fun of(kind: LabelKind) = when (kind) {
+            LabelKind.CONTACT -> CONTACT
+            LabelKind.UNKNOWN_NUMBER, LabelKind.OTHER_LABEL -> UNKNOWN_NUMBER
+            LabelKind.PRIVATE -> PRIVATE
+            LabelKind.SPAM, LabelKind.FRAUD -> SPAM_FRAUD
+        }
+    }
+}
 
 /** Tag keys usable as policy targets — the same closed list as [Relationship] (single source of truth). */
 object RelationshipTags {
@@ -86,7 +103,7 @@ object RelationshipTags {
 }
 
 /**
- * What to do with calls of one target: a caller type, an AI relationship tag, or one contact.
+ * What to do with calls of one target: a caller type, a contact group, an AI relationship tag, or one contact.
  * Exactly one target field is set. The most specific matching policy wins as a whole (see docs/plans/policies.md).
  * Retention values are days; [FOREVER] = keep forever; cloud may also be [SAME_AS_LOCAL].
  */
@@ -94,8 +111,8 @@ object RelationshipTags {
 @Entity(tableName = "policies")
 data class PolicyEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    /** Caller-type target. */
-    val groupKind: LabelKind? = null,
+    /** Caller-type target. (Column kept from v2, when it held a [LabelKind].) */
+    @ColumnInfo(name = "groupKind") val callerType: CallerType? = null,
     /** Contact target: name and/or comma-separated normalized numbers (last 9 digits). */
     val displayName: String = "",
     val numbers: String = "",
@@ -107,22 +124,26 @@ data class PolicyEntity(
     val tag: String? = null,
     /** Retention of the Drive backup copy (audio and text). Used once Drive backup exists. */
     @ColumnInfo(defaultValue = "-2") val cloudRetentionDays: Int = SAME_AS_LOCAL,
+    /** Contact-group target: the group's title in the phone's contacts (any account). */
+    val contactGroup: String? = null,
+    /** Order among contact-group policies: lower wins when a contact is in several groups. */
+    @ColumnInfo(defaultValue = "0") val priority: Int = 0,
 ) {
     val target: PolicyTarget get() = when {
-        groupKind != null -> PolicyTarget.CALLER_TYPE
+        callerType != null -> PolicyTarget.CALLER_TYPE
+        contactGroup != null -> PolicyTarget.CONTACT_GROUP
         tag != null -> PolicyTarget.TAG
         else -> PolicyTarget.CONTACT
     }
-    val isGroup get() = groupKind != null
 
     companion object {
         const val FOREVER = -1
         const val SAME_AS_LOCAL = -2
 
-        fun defaultFor(kind: LabelKind) = PolicyEntity(
-            groupKind = kind,
-            transcribe = kind != LabelKind.CONTACT,
-            summarize = kind != LabelKind.CONTACT,
+        fun defaultFor(type: CallerType) = PolicyEntity(
+            callerType = type,
+            transcribe = type != CallerType.CONTACT,
+            summarize = type != CallerType.CONTACT,
         )
     }
 }

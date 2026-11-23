@@ -1,5 +1,6 @@
 package app.callscribe
 
+import app.callscribe.data.CallerType
 import app.callscribe.data.LabelKind
 import app.callscribe.data.PolicyEntity
 import app.callscribe.data.RecordingEntity
@@ -73,7 +74,7 @@ class ParserTest {
 
 class PolicyTest {
     private fun cp(name: String) = RecordingNameParser.parse("Call recording ${name}_250101_101010.m4a")
-    private val groups = LabelKind.entries.map { PolicyEntity.defaultFor(it) }
+    private val groups = CallerType.entries.map { PolicyEntity.defaultFor(it) }
     private fun contact(name: String, process: Boolean, number: String = "") = PolicyEntity(
         displayName = name, numbers = PhoneNumbers.normalize(number).orEmpty(), transcribe = process, summarize = process,
     )
@@ -110,13 +111,13 @@ class RetentionTest {
     )
 
     @Test fun keepForeverByDefault() {
-        val plan = Retention.plan(listOf(rec(1, LabelKind.SPAM, 999, "x")), LabelKind.entries.map { PolicyEntity.defaultFor(it) }, now)
+        val plan = Retention.plan(listOf(rec(1, LabelKind.SPAM, 999, "x")), CallerType.entries.map { PolicyEntity.defaultFor(it) }, now)
         assertTrue(plan.isEmpty)
     }
 
     @Test fun audioAndTextRetentionAreSeparate() {
-        val spam = PolicyEntity.defaultFor(LabelKind.SPAM).copy(audioRetentionDays = 7, textRetentionDays = 30)
-        val unknown = PolicyEntity.defaultFor(LabelKind.UNKNOWN_NUMBER).copy(audioRetentionDays = 7) // text kept forever
+        val spam = PolicyEntity.defaultFor(CallerType.SPAM_FRAUD).copy(audioRetentionDays = 7, textRetentionDays = 30)
+        val unknown = PolicyEntity.defaultFor(CallerType.UNKNOWN_NUMBER).copy(audioRetentionDays = 7) // text kept forever
         val rows = listOf(
             rec(1, LabelKind.SPAM, 10, "t"), rec(2, LabelKind.SPAM, 40, "t"), rec(3, LabelKind.SPAM, 3, "t"),
             rec(4, LabelKind.UNKNOWN_NUMBER, 400, "t"),
@@ -127,7 +128,7 @@ class RetentionTest {
     }
 
     @Test fun contactOverrideAndAlreadyDeletedAudio() {
-        val group = PolicyEntity.defaultFor(LabelKind.CONTACT).copy(audioRetentionDays = 30)
+        val group = PolicyEntity.defaultFor(CallerType.CONTACT).copy(audioRetentionDays = 30)
         val keepMom = PolicyEntity(displayName = "Mom", transcribe = false, summarize = false)
         val rows = listOf(
             rec(1, LabelKind.CONTACT, 60, cp = "Mom"),
@@ -138,13 +139,13 @@ class RetentionTest {
     }
 
     @Test fun keepForeverBlocksAudioAndTextDeletion() {
-        val spam = PolicyEntity.defaultFor(LabelKind.SPAM).copy(audioRetentionDays = 7, textRetentionDays = 7)
+        val spam = PolicyEntity.defaultFor(CallerType.SPAM_FRAUD).copy(audioRetentionDays = 7, textRetentionDays = 7)
         val kept = rec(1, LabelKind.SPAM, 400, "t").copy(keepForever = true)
         assertTrue(Retention.plan(listOf(kept), listOf(spam), now).isEmpty)
     }
 
     @Test fun keepForeverOnlyAffectsFlaggedRows() {
-        val spam = PolicyEntity.defaultFor(LabelKind.SPAM).copy(audioRetentionDays = 7, textRetentionDays = 7)
+        val spam = PolicyEntity.defaultFor(CallerType.SPAM_FRAUD).copy(audioRetentionDays = 7, textRetentionDays = 7)
         val rows = listOf(rec(1, LabelKind.SPAM, 400, "t").copy(keepForever = true), rec(2, LabelKind.SPAM, 400, "t"))
         val plan = Retention.plan(rows, listOf(spam), now)
         assertEquals(listOf(2L), plan.trashAudio.map { it.id })

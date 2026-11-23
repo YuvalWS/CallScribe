@@ -55,7 +55,7 @@ interface RecordingDao {
 
 @Dao
 interface PolicyDao {
-    @Query("SELECT * FROM policies ORDER BY groupKind IS NULL, tag IS NULL, tag, displayName")
+    @Query("SELECT * FROM policies ORDER BY groupKind IS NULL, contactGroup IS NULL, priority, tag IS NULL, tag, displayName")
     fun observeAll(): Flow<List<PolicyEntity>>
 
     @Query("SELECT * FROM policies")
@@ -73,21 +73,44 @@ interface PolicyDao {
     /** Creates any missing group policy with its defaults. */
     @androidx.room.Transaction
     suspend fun ensureGroupDefaults() {
-        val have = all().mapNotNull { it.groupKind }.toSet()
-        LabelKind.entries.filter { it !in have }.forEach { insert(PolicyEntity.defaultFor(it)) }
+        val have = all().mapNotNull { it.callerType }.toSet()
+        CallerType.entries.filter { it !in have }.forEach { insert(PolicyEntity.defaultFor(it)) }
     }
 }
 
 /** Migration SQL kept as plain strings so unit tests can run it on SQLite without Android. */
 object PolicyMigrations {
-    /** v4 → v5 (was 2→3 on the policies branch before the merge renumbering). */
+    /** v4 → v5 (was 2→3 on the policies branch before the merge renumbering). Add-only. */
     val SQL_4_5 = listOf(
         "ALTER TABLE policies ADD COLUMN tag TEXT",
         "ALTER TABLE policies ADD COLUMN cloudRetentionDays INTEGER NOT NULL DEFAULT -2",
     )
+
+    /** Keep-more merge of a retention value: forever wins, else the longer period. */
+    private fun keepMore(col: String) =
+        "CASE WHEN $col < 0 OR (SELECT $col FROM policies WHERE groupKind = 'FRAUD' LIMIT 1) < 0 THEN -1 " +
+            "ELSE MAX($col, (SELECT $col FROM policies WHERE groupKind = 'FRAUD' LIMIT 1)) END"
+
+    /** v5 → v6: contact-group target + priority; spam and fraud merge (keeping the more protective value), "other labels" goes. */
+    val SQL_5_6 = listOf(
+        "ALTER TABLE policies ADD COLUMN contactGroup TEXT",
+        "ALTER TABLE policies ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
+        // Spam + fraud become one caller type, keeping the more protective value of each field.
+        "UPDATE policies SET " +
+            "transcribe = MAX(transcribe, (SELECT transcribe FROM policies WHERE groupKind = 'FRAUD' LIMIT 1)), " +
+            "summarize = MAX(summarize, (SELECT summarize FROM policies WHERE groupKind = 'FRAUD' LIMIT 1)), " +
+            "audioRetentionDays = ${keepMore("audioRetentionDays")}, " +
+            "textRetentionDays = ${keepMore("textRetentionDays")} " +
+            "WHERE groupKind = 'SPAM' AND EXISTS (SELECT 1 FROM policies WHERE groupKind = 'FRAUD')",
+        "UPDATE policies SET groupKind = 'SPAM_FRAUD' WHERE groupKind = 'SPAM'",
+        "UPDATE policies SET groupKind = 'SPAM_FRAUD' WHERE groupKind = 'FRAUD' " +
+            "AND NOT EXISTS (SELECT 1 FROM policies WHERE groupKind = 'SPAM_FRAUD')",
+        // Samsung's other labels no longer have a caller type: those calls follow "Unknown numbers".
+        "DELETE FROM policies WHERE groupKind IN ('FRAUD', 'OTHER_LABEL')",
+    )
 }
 
-@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 5, exportSchema = true)
+@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 6, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun recordings(): RecordingDao
     abstract fun policies(): PolicyDao
@@ -135,9 +158,16 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v5 → v6: contact groups with priority; spam+fraud merge, "other labels" goes. */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                PolicyMigrations.SQL_5_6.forEach(db::execSQL)
+            }
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "callscribe.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
     }
 }

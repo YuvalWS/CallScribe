@@ -20,6 +20,7 @@ import app.callscribe.CallScribeApp
 import app.callscribe.data.RecordingEntity
 import app.callscribe.data.Status
 import app.callscribe.pipeline.ProcessWorker
+import app.callscribe.rules.ContactGroupIndex
 import app.callscribe.rules.PolicyResolver
 import java.time.Duration
 import java.util.concurrent.TimeUnit
@@ -111,9 +112,10 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
 
             graph.db.policies().ensureGroupDefaults()
             val policies = graph.db.policies().all()
+            val groups = if (result.newRows.isEmpty()) ContactGroupIndex.EMPTY else graph.contactGroups.index()
             for (row in result.newRows) {
                 if (row.dateAddedSec < settings.autoProcessFromSec) continue
-                handleNew(row, policies, settings)
+                handleNew(row, policies, groups, settings)
             }
             return Result.success()
         } catch (e: SecurityException) {
@@ -127,10 +129,11 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
     private suspend fun handleNew(
         row: RecordingEntity,
         policies: List<app.callscribe.data.PolicyEntity>,
+        groups: ContactGroupIndex,
         settings: app.callscribe.data.AppSettings,
     ) {
         val graph = (applicationContext as CallScribeApp).graph
-        val policy = PolicyResolver.forProcessing(row, policies)
+        val policy = PolicyResolver.forProcessing(row, policies, groups)
         val canTranscribe = graph.providers.transcriber(settings)?.isConfigured() == true
         if (!settings.autoEnabled || !policy.transcribe) {
             graph.db.recordings().setStatus(row.id, Status.SKIPPED_BY_RULE)

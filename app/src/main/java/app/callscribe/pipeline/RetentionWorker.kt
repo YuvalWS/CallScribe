@@ -28,7 +28,10 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
     companion object {
         suspend fun currentPlan(graph: AppGraph): RetentionPlan {
             graph.db.policies().ensureGroupDefaults()
-            return Retention.plan(graph.db.recordings().all(), graph.db.policies().all(), System.currentTimeMillis() / 1000)
+            return Retention.plan(
+                graph.db.recordings().all(), graph.db.policies().all(), System.currentTimeMillis() / 1000,
+                groups = graph.contactGroups.index(),
+            )
         }
 
         suspend fun deleteText(graph: AppGraph, plan: RetentionPlan): Int {
