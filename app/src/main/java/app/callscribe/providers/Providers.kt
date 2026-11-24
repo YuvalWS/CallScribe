@@ -27,7 +27,7 @@ sealed interface TranscriptionState {
     data class Failed(val message: String, val retryable: Boolean) : TranscriptionState
 }
 
-class AudioInput(val bytes: ByteArray, val mimeType: String, val fileName: String)
+class AudioInput(val bytes: ByteArray, val mimeType: String, val fileName: String, val durationMs: Long = 0)
 
 /** Speech-to-text provider. Async by design: submit returns a job handle that survives worker restarts. */
 interface Transcriber {

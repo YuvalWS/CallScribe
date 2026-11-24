@@ -101,6 +101,23 @@ class DriveBackupTest {
         override fun openAudio(r: RecordingEntity) = UploadContent.Stream(3, "audio/mp4") {
             opened += r.contentHash; ByteArrayInputStream(byteArrayOf(1, 2, 3))
         }
+        var deleted = setOf<String>()
+        override suspend fun deletedHashes() = deleted
+        override suspend fun forgetDeleted(hashes: Set<String>) { deleted = deleted - hashes }
+    }
+
+    @Test fun callDeletedInTheAppIsTrashedOnDrive() = runBlocking {
+        val drive = FakeDriveApi()
+        val engine = DriveBackupEngine(drive, ZoneOffset.UTC)
+        val src = Source(listOf(rec(1), rec(2)))
+        engine.backup(dev, src, includeAudio = true, nowSec = now)
+        src.rows = listOf(rec(1))
+        src.deleted = setOf(rec(2).contentHash)
+        val r = engine.backup(dev, src, includeAudio = true, nowSec = now)
+        assertEquals(listOf(rec(1).contentHash), drive.filesIn(BackupFormat.KIND_CALL).map { it.file.appProperties[BackupFormat.HASH] })
+        assertEquals(listOf(rec(1).contentHash), drive.filesIn(BackupFormat.KIND_RECORDING).map { it.file.appProperties[BackupFormat.HASH] })
+        assertEquals(1, r.callsOnDrive)
+        assertTrue(src.deleted.isEmpty())
     }
 
     /** Planner with a fixed cloud period for every policy (the policies branch stores it per policy). */

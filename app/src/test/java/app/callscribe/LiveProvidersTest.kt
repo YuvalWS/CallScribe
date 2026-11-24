@@ -48,7 +48,7 @@ class LiveProvidersTest {
     private val tagCases = listOf(
         Triple("family_friends", CallMeta("אמא", null, "CONTACT", 40, "Fri 2026-11-20 12:30"), """
             היי מותק, זאת אמא. רציתי לשאול אם אתם באים לארוחת שישי הערב. סבתא מאוד רוצה לראות את הילדים.
-            תביא גם את הסלט שאבא אוהב. תתקשר אליי כשאתה מתפנה, נשיקות.
+            תביא גם את הסלט שאבא אוהב. ותגיד לי אם... הלו? הלו? אתה שומע אותי? נראה שהשיחה
         """.trimIndent()),
         Triple("work", CallMeta("דני מהמשרד", null, "CONTACT", 55, "Mon 2026-11-23 09:10"), """
             בוקר טוב, זה דני. הישיבה עם הצוות של הפרויקט זזה לשתיים במקום לאחת עשרה.
@@ -75,6 +75,7 @@ class LiveProvidersTest {
             cost += res.cost?.usd ?: 0.0
             println("[${an.id} tags] want=$want got=${r.relationship} verdict=${r.verdict} category=${r.category} " +
                 "tokens=${res.inputTokens}/${res.outputTokens} cost=$${"%.6f".format(res.cost?.usd ?: 0.0)} intent=${r.caller_intent}")
+            println("    summary=${r.summary_he}")
             want to r.relationship
         }
         println("[${an.id} tags] total cost for ${tagCases.size} calls: $${"%.6f".format(cost)}")

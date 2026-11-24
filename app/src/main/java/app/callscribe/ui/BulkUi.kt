@@ -62,7 +62,7 @@ internal fun EstimateLines(plan: BulkPlan, e: BulkEstimate) {
             fontWeight = FontWeight.SemiBold,
         )
         if (plan.analyzeOnly.isNotEmpty()) Text("${plan.analyzeOnly.size} already transcribed — only the summary is added.", style = MaterialTheme.typography.bodySmall)
-        if (plan.skipped > 0) Text("${plan.skipped} skipped (already done, in progress or audio deleted).", style = MaterialTheme.typography.bodySmall)
+        if (plan.skipped > 0) Text("${plan.skipped} skipped (already done, in progress, under 5 seconds or audio deleted).", style = MaterialTheme.typography.bodySmall)
         e.notes.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
         if (!e.isFree) Text("Stops by itself if it costs more than ${Fmt.usd(e.capUsd)}.", style = MaterialTheme.typography.bodySmall)
     }

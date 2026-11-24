@@ -372,7 +372,7 @@ private fun PolicyStep(graph: AppGraph, autoEnabled: Boolean) {
             }
         }
     }
-    Text("Automatic processing only runs once transcription is set up.", style = MaterialTheme.typography.bodySmall)
+    Text("Automatic processing only runs once transcription is set up. Calls shorter than 5 seconds are skipped; you can still transcribe them by hand.", style = MaterialTheme.typography.bodySmall)
 }
 
 /** Which existing calls to process during onboarding. */

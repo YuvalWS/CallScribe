@@ -182,6 +182,13 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
         }
     }
 
+    private fun deletedPrefs() = context.getSharedPreferences("deleted_calls", Context.MODE_PRIVATE)
+
+    /** Remembers a call deleted in the app, so the next backup removes its Drive copies. */
+    fun markDeleted(contentHash: String) {
+        deletedPrefs().edit().putStringSet("hashes", deletedPrefs().getStringSet("hashes", emptySet()).orEmpty() + contentHash).apply()
+    }
+
     private val source = object : BackupSource {
         override suspend fun recordings() = graph.db.recordings().all()
         override suspend fun policies(): List<PolicyEntity> {
@@ -189,6 +196,10 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
             return graph.db.policies().all()
         }
         override suspend fun settings() = graph.settings.get()
+        override suspend fun deletedHashes(): Set<String> = deletedPrefs().getStringSet("hashes", emptySet()).orEmpty()
+        override suspend fun forgetDeleted(hashes: Set<String>) {
+            deletedPrefs().edit().putStringSet("hashes", deletedHashes() - hashes).apply()
+        }
         override fun openAudio(r: RecordingEntity): UploadContent.Stream? {
             val uri = r.uri.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: return null
             val size = runCatching { context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize } }.getOrNull()

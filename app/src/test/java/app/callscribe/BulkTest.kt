@@ -109,3 +109,18 @@ class BulkProgressTest {
         assertFalse(BulkProgress.of(run, rows.take(2)).running)
     }
 }
+
+class ShortCallTest {
+    @Test fun callsUnderFiveSecondsAreSkippedButUnknownLengthIsNot() {
+        val p = BulkPlan.of(listOf(call(1, min = 2.0 / 60), call(2, min = 0.0), call(3, min = 1.0)), summarize = false)
+        assertEquals(listOf(2L, 3L), p.transcribe.map { it.id })
+        assertEquals(1, p.skipped)
+    }
+
+    @Test fun noSpeakerSeparationOnShortCalls() {
+        val f = app.callscribe.providers.ivrit.IvritRunPodTranscriber.Companion
+        assertFalse(f.diarizeFor(true, 2_000))
+        assertTrue(f.diarizeFor(true, 60_000))
+        assertFalse(f.diarizeFor(false, 60_000))
+    }
+}

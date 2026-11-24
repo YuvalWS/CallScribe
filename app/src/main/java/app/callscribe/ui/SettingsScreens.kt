@@ -17,6 +17,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenuItem
@@ -86,7 +89,11 @@ fun SettingsScreen(
     val ctx = LocalContext.current
     Page("Settings", onBack) {
         val st = s ?: return@Page
-        rememberSetupStatus(graph)?.recommendations()?.takeIf { it.isNotEmpty() }?.let { Recommendations(it) }
+        val setupStatus = rememberSetupStatus(graph)
+        var dismissed by remember { mutableStateOf(RecommendationPrefs.dismissed(ctx)) }
+        setupStatus?.recommendations()?.filter { it !in dismissed }?.takeIf { it.isNotEmpty() }?.let { list ->
+            Recommendations(list) { r -> RecommendationPrefs.dismiss(ctx, r); dismissed = RecommendationPrefs.dismissed(ctx) }
+        }
         NavRow("Transcription & AI providers", "Your RunPod endpoint and your AI provider (Gemini, OpenRouter, Claude)", onProviders)
         NavRow("Processing & retention policies", "Per caller type or contact: transcribe, summarize, how long to keep", onRules)
         NavRow("Retention review", "Recordings past their retention period", onRetention)
@@ -131,11 +138,30 @@ fun SettingsScreen(
 
         Section("Background")
         Text(
-            "For reliable automatic processing, let CallScribe run in the background: Settings → Battery → Background usage limits → Never sleeping apps.",
+            "Two separate settings keep automatic processing on time. Both are recommended.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        val unrestricted = setupStatus?.batteryUnrestricted == true
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(
+                if (unrestricted) androidx.compose.material.icons.Icons.Default.CheckCircle else androidx.compose.material.icons.Icons.Default.Warning,
+                if (unrestricted) "Done" else "Not done", Modifier.padding(top = 2.dp),
+                tint = if (unrestricted) MaterialTheme.colorScheme.primary else androidx.compose.ui.graphics.Color(0xFFE6A100),
+            )
+            Text(if (unrestricted) "Battery: Unrestricted" else "Battery: Optimized (not done)", style = MaterialTheme.typography.titleSmall)
+        }
+        Text("Android's battery setting for this app: App info → Battery → Unrestricted.", style = MaterialTheme.typography.bodySmall)
+        OutlinedButton(onClick = {
+            runCatching { ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", ctx.packageName, null))) }
+        }) { Text("Open app info") }
+        Text("Never sleeping apps (Samsung)", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Samsung's own list: Settings → Battery → Background usage limits → Never sleeping apps → add CallScribe. " +
+                "Android doesn't let apps check this one, so it has no status.",
             style = MaterialTheme.typography.bodySmall,
         )
         OutlinedButton(onClick = {
-            ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+            runCatching { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
         }) { Text("Open battery settings") }
         HorizontalDivider()
 
@@ -143,9 +169,18 @@ fun SettingsScreen(
     }
 }
 
-/** Skipped setup items that still matter, each with a button that fixes it. */
+/** Recommendations the user closed with ✕: never shown again. */
+object RecommendationPrefs {
+    private fun prefs(ctx: android.content.Context) = ctx.getSharedPreferences("recommendations", android.content.Context.MODE_PRIVATE)
+    fun dismissed(ctx: android.content.Context): Set<Recommendation> =
+        prefs(ctx).getStringSet("dismissed", emptySet()).orEmpty().mapNotNull { n -> Recommendation.entries.firstOrNull { it.name == n } }.toSet()
+    fun dismiss(ctx: android.content.Context, r: Recommendation) =
+        prefs(ctx).edit().putStringSet("dismissed", dismissed(ctx).map { it.name }.toSet() + r.name).apply()
+}
+
+/** Skipped setup items that still matter, each with a button that fixes it and ✕ to hide it for good. */
 @Composable
-private fun Recommendations(items: List<Recommendation>) {
+private fun Recommendations(items: List<Recommendation>, onDismiss: (Recommendation) -> Unit) {
     val ctx = LocalContext.current
     androidx.compose.material3.Card(
         colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
@@ -153,7 +188,10 @@ private fun Recommendations(items: List<Recommendation>) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Recommended", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             items.forEach { r ->
-                Text(r.title, style = MaterialTheme.typography.titleSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(r.title, style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                    IconButton(onClick = { onDismiss(r) }) { Icon(androidx.compose.material.icons.Icons.Default.Close, "Don't show again") }
+                }
                 Text(r.detail, style = MaterialTheme.typography.bodySmall)
                 OutlinedButton(onClick = {
                     val intent = when (r) {

@@ -18,6 +18,10 @@ you configure it.
   set by the AI and correctable on the call page (your choice is never overwritten). Filter and search by tag
   (English or Hebrew, e.g. "משפחה").
 - **Transcribe** button on every row and on the call page; **Analyze** for the AI summary.
+- **Delete a call**: the trash button on a call moves its recording to the phone's trash (restorable for 30 days) and
+  removes its transcript, summary and Google Drive copy, after you confirm.
+- Calls shorter than 5 seconds are skipped by automatic and bulk processing (you can still transcribe them by hand);
+  speaker separation is skipped on calls under 20 seconds, where it can't work.
 - **Bulk processing**: tap the select button (or long-press a call), tick calls or *All* (everything matching the
   search and filters) and tap *Process*. You see the number of calls, audio minutes, an estimated cost and time
   first (from your own past costs when there are enough); the run stops by itself at twice the estimate and can be

@@ -15,8 +15,14 @@ all bring-your-own-key (prices to re-check before building):
 | On device | sherpa-onnx multilingual model (Whisper small / SenseVoice) | Free and private, weaker than cloud |
 
 Design: a `Transcriber` per option (the interface already exists), a **language** setting (auto-detect by default),
-and the onboarding transcription step offers "Hebrew (ivrit.ai)" vs "Other languages". The AI summary prompt
-already takes the language from the transcript; make the summary language a setting.
+and the onboarding transcription step offers "Hebrew (ivrit.ai)" vs "Other languages".
+
+**AI summary prompt.** The instructions are written in English but ask for Hebrew output (`summary_he`,
+`caller_intent`) and give Hebrew examples for the tags. To go global, keep one English prompt and add the output
+language as a parameter: "write summary and caller_intent in {language}" where the language is the recording's
+(detected by the transcriber) or a setting ("same as the call" / a fixed language). Rename `summary_he` to `summary`
+(with a DB/JSON migration), and move the Hebrew tag examples into per-language example lists. Separate prompts per
+language only if the English-with-target-language prompt measurably does worse.
 
 ## 2. Other phones
 
@@ -33,6 +39,10 @@ already takes the language from the transcript; make the summary language a sett
 
 Facts checked on the test phone: Samsung writes the **contact name** into the file name when the caller is a contact,
 otherwise the **number**; the file's metadata holds nothing more (title = file name, album "Call", no number).
+Android's call log (`content://call_log/calls`) has `number`, `date` (call start), `duration` and the cached `name`,
+but no link to the recording: Samsung's Phone app keeps that link in its own private data. Matching works by time —
+the file name's timestamp is the call's start, so "call log entry starting within a few seconds, with a similar
+duration" identifies the call and its number.
 So today a call recorded before the caller was saved keeps showing the number, and a call with a contact shows only
 the name.
 

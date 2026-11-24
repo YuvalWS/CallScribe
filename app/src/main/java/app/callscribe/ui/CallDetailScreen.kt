@@ -13,6 +13,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -81,11 +82,44 @@ fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () 
     val scope = rememberCoroutineScope()
     var pendingKeep by remember { mutableStateOf<PendingRetentionChange?>(null) }
     pendingKeep?.let { RetentionWarningDialog(it, onDismiss = { pendingKeep = null }) }
+    var askDelete by remember { mutableStateOf(false) }
+    // Android asks the user to confirm moving another app's recording to the trash; only then is the call removed.
+    val trash = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult(),
+    ) { res ->
+        val rec = r ?: return@rememberLauncherForActivityResult
+        if (res.resultCode == android.app.Activity.RESULT_OK) scope.launch { removeCall(ctx, graph, rec); onBack() }
+    }
+    if (askDelete) r?.let { rec ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { askDelete = false },
+            title = { Text("Delete this call?") },
+            text = {
+                Text(
+                    "The recording moves to the phone's trash (you can restore it from there for 30 days). Its transcript and " +
+                        "summary are deleted from CallScribe, and its Google Drive backup copy at the next backup." +
+                        if (rec.keepForever) " This call is marked Keep forever." else "",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    askDelete = false
+                    if (rec.fileMissing || rec.uri.isBlank()) scope.launch { removeCall(ctx, graph, rec); onBack() }
+                    else {
+                        val pi = android.provider.MediaStore.createTrashRequest(ctx.contentResolver, listOf(android.net.Uri.parse(rec.uri)), true)
+                        trash.launch(androidx.activity.result.IntentSenderRequest.Builder(pi.intentSender).build())
+                    }
+                }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { askDelete = false }) { Text("Cancel") } },
+        )
+    }
 
     Scaffold(topBar = {
         TopAppBar(
             title = { Text(r?.let(Fmt::title) ?: "") },
             navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+            actions = { IconButton(onClick = { askDelete = true }) { Icon(Icons.Default.Delete, "Delete call") } },
         )
     }) { pad ->
         val rec = r ?: return@Scaffold
@@ -287,6 +321,14 @@ private suspend fun setCallerPolicy(graph: AppGraph, counterparty: String, own: 
             )
         )
     }
+}
+
+/** Removes a call from CallScribe after its audio was trashed: stops any work on it and queues its Drive copies for removal. */
+suspend fun removeCall(ctx: android.content.Context, graph: AppGraph, r: RecordingEntity) {
+    androidx.work.WorkManager.getInstance(ctx).cancelUniqueWork("process-${r.id}")
+    graph.drive.markDeleted(r.contentHash)
+    graph.db.recordings().deleteById(r.id)
+    app.callscribe.Logx.i("CallDetail", "call ${r.id} deleted by the user")
 }
 
 /** Manual "process": transcribe (if needed) and summarize when an AI provider is set up. Used by the list and detail screens. */

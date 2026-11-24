@@ -2,6 +2,7 @@ package app.callscribe.ui
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -20,6 +21,7 @@ import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Report
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Subtitles
@@ -136,11 +138,10 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
     }) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             val all = rows.orEmpty()
-            val total = remember(all) { all.sumOf { it.totalCostUsd } }
             val processed = remember(all) { all.count { it.transcriptText != null } }
             OutlinedTextField(
                 value = query, onValueChange = { query = it }, singleLine = true,
-                placeholder = { Text("Search name, number or words in calls") },
+                placeholder = { Text("Search calls", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                 leadingIcon = { Icon(Icons.Default.Search, null) },
                 trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { query = "" }) { Icon(Icons.Default.Clear, "Clear search") } },
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
@@ -155,7 +156,7 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
             shownIds = remember(shown) { shown.map { it.id } }
             Text(
                 (if (shown.size != all.size) "showing ${shown.size} of ${all.size}" else "${all.size} recordings") +
-                    " · $processed transcribed · spent ${Fmt.usd(total)}",
+                    " · $processed transcribed",
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
@@ -176,8 +177,11 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                     FilterChip(selected = filter == f, onClick = { filter = f }, label = { Text(f.title) })
                 }
                 DateFilterChip(dateSel) { dateSel = it }
+                // Tags share the same row: one line of filters instead of two.
+                Relationship.entries.forEach { t ->
+                    FilterChip(selected = tag == t, onClick = { tag = if (tag == t) null else t }, label = { Text(t.en) })
+                }
             }
-            TagFilterRow(tag) { tag = it }
             BulkBanner(graph, all)
             if (selected != null) Text(
                 "Tap calls to select them, or use All to select every call matching the search and filters.",
@@ -218,42 +222,45 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
     }
 }
 
-/** [selected] null = not in selection mode. Long-press starts selecting. */
+/**
+ * One call, kept quiet: name + time, then length · tag (· status while busy or failed), then one line of summary.
+ * Only calls flagged as spam get an icon; costs live in the call's own screen. [selected] null = not selecting.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CallRow(
     r: RecordingEntity, selected: Boolean?, onClick: () -> Unit, onLongClick: () -> Unit, onToggleKeep: () -> Unit, onProcess: () -> Unit,
 ) {
     val busy = r.status in setOf(Status.QUEUED, Status.TRANSCRIBING, Status.ANALYZING)
+    val flagged = r.verdict == "spam" || (r.verdict == null && (r.labelKind == LabelKind.SPAM || r.labelKind == LabelKind.FRAUD))
     Row(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick)
         .padding(start = if (selected != null) 4.dp else 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
         if (selected != null) Checkbox(selected, onCheckedChange = { onClick() })
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (flagged) Icon(
+                    Icons.Default.Report, "Spam", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error,
+                )
                 Text(
                     Fmt.title(r), style = MaterialTheme.typography.titleMedium,
                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
                 )
-                Text(Fmt.time(r.callTimeSec), style = MaterialTheme.typography.bodySmall)
+                Text(Fmt.time(r.callTimeSec), style = MaterialTheme.typography.bodySmall, maxLines = 1)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(Fmt.duration(r.durationMs), style = MaterialTheme.typography.bodySmall)
-                val label = r.samsungLabel ?: Fmt.label(r.labelKind)
-                if (r.labelKind != LabelKind.CONTACT && label != Fmt.title(r)) SmallChip(label, labelColor(r.labelKind))
+                r.relationship?.let { TagPill(it.en, relationshipColor(it) ?: MaterialTheme.colorScheme.surfaceVariant) }
                 when {
-                    r.verdict != null -> SmallChip(
-                        when (r.verdict) { "spam" -> "Spam ${((r.spamConfidence ?: 0.0) * 100).toInt()}%"; "not_spam" -> "Not spam"; else -> "Unsure" },
-                        verdictColor(r.verdict),
+                    busy || r.status == Status.FAILED -> Text(
+                        Fmt.status(r.status), style = MaterialTheme.typography.bodySmall,
+                        color = if (r.status == Status.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                     )
-                    else -> SmallChip(Fmt.status(r.status))
+                    r.fileMissing -> Text("audio deleted", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
-                r.relationship?.let { SmallChip(it.en, relationshipColor(it)) }
-                if (r.totalCostUsd > 0) Text(Fmt.usd(r.totalCostUsd), style = MaterialTheme.typography.bodySmall)
-                if (r.fileMissing) Text("audio deleted", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
-            val line = r.callerIntent ?: r.summary ?: r.transcriptText ?: (if (r.status == Status.FAILED) r.error else null)
-            if (line != null) Text(line, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+            val line = r.callerIntent ?: r.summary ?: r.transcriptText
+            if (line != null) Text(line, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
         }
         if (selected != null) return@Row // row actions are hidden while selecting
         IconButton(onClick = onToggleKeep, modifier = Modifier.semantics { contentDescription = if (r.keepForever) "Kept forever" else "Keep forever" }) {
@@ -270,19 +277,13 @@ private fun CallRow(
     }
 }
 
-/** Tag filter chips (tap again to clear). Separate row so it combines with the main filter. */
+/** A small one-line colored label (lighter than a chip, never wraps). */
 @Composable
-private fun TagFilterRow(selected: Relationship?, onSelect: (Relationship?) -> Unit) {
-    Row(
-        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        Relationship.entries.forEach { t ->
-            FilterChip(
-                selected = selected == t,
-                onClick = { onSelect(if (selected == t) null else t) },
-                label = { Text(t.en) },
-            )
-        }
-    }
+private fun TagPill(text: String, color: androidx.compose.ui.graphics.Color) {
+    Text(
+        text, maxLines = 1, softWrap = false, style = MaterialTheme.typography.labelMedium,
+        color = androidx.compose.ui.graphics.Color(0xFF1C1B1F),
+        modifier = Modifier.background(color, androidx.compose.foundation.shape.RoundedCornerShape(6.dp)).padding(horizontal = 6.dp, vertical = 1.dp),
+    )
 }
+

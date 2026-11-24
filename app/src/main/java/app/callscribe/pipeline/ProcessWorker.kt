@@ -244,13 +244,13 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         val uri = Uri.parse(row.uri)
         if (row.sizeBytes in 1..maxBytes) {
             val bytes = applicationContext.contentResolver.openInputStream(uri)!!.use { it.readBytes() }
-            return AudioInput(bytes, "audio/mp4", row.displayName)
+            return AudioInput(bytes, "audio/mp4", row.displayName, row.durationMs)
         }
         val compressed = AudioCompressor(applicationContext).compress(uri)
         if (compressed.size > maxBytes) {
             throw ProviderError("Recording too long for this provider even after compression (${compressed.size / 1_000_000} MB)", false)
         }
-        return AudioInput(compressed, "audio/mp4", row.displayName)
+        return AudioInput(compressed, "audio/mp4", row.displayName, row.durationMs)
     }
 
     /** Paid submissions made by this work request (keyed by its WorkManager id), see [MAX_SUBMITS]. */

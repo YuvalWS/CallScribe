@@ -23,6 +23,10 @@ interface BackupSource {
     suspend fun settings(): AppSettings
     /** The local audio file, or null if it can't be read (deleted, no permission). */
     fun openAudio(r: RecordingEntity): UploadContent.Stream?
+    /** Calls the user deleted in the app (content hashes): their Drive copies are moved to the Drive trash. */
+    suspend fun deletedHashes(): Set<String> = emptySet()
+    /** Called with the hashes whose Drive copies are gone, so they aren't tried again. */
+    suspend fun forgetDeleted(hashes: Set<String>) {}
 }
 
 /** What a restore writes into the app. */
@@ -175,11 +179,21 @@ class DriveBackupEngine(
                 callsUploaded.incrementAndGet()
             }
         }
-        val callsOnDrive = (callFiles.keys + rows.map { it.contentHash }).size
-
-        // Recordings: trash the expired ones, then upload new ones (opt-in).
+        // Recordings on Drive, by content hash.
         val audioFiles = api.list(f.audio).filter { it.appProperties[KIND] == BackupFormat.KIND_RECORDING }
             .groupBy { it.appProperties[HASH] }.toMutableMap()
+
+        // Calls deleted in the app: trash their call file and recording on Drive, so a restore doesn't bring them back.
+        val deleted = source.deletedHashes()
+        val gone = mutableSetOf<String>()
+        for (hash in deleted) {
+            val files = listOfNotNull(callFiles[hash]) + audioFiles[hash].orEmpty()
+            if (files.all { file -> attempt { api.trash(file.id) } }) { gone += hash; audioFiles.remove(hash) }
+        }
+        if (gone.isNotEmpty()) source.forgetDeleted(gone)
+        val callsOnDrive = ((callFiles.keys - gone) + rows.map { it.contentHash }).size
+
+        // Recordings: trash the expired ones, then upload new ones (opt-in).
         var trashed = 0
         for (hash in cloudAudioDue) {
             val files = audioFiles[hash] ?: continue

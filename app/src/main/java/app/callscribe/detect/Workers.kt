@@ -136,7 +136,7 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val policy = PolicyResolver.forProcessing(row, policies, groups)
         val canTranscribe = graph.providers.transcriber(settings)?.isConfigured() == true
         Logx.d(TAG, "call ${row.id}: new, type ${row.labelKind}, auto=${settings.autoEnabled} transcribe=${policy.transcribe} summarize=${policy.summarize} provider ready=$canTranscribe")
-        if (!settings.autoEnabled || !policy.transcribe) {
+        if (!settings.autoEnabled || !policy.transcribe || app.callscribe.pipeline.BulkPlan.tooShort(row)) {
             graph.db.recordings().setStatus(row.id, Status.SKIPPED_BY_RULE)
             return
         }

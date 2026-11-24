@@ -13,7 +13,17 @@ object AnalysisPrompt {
     val SYSTEM = """
         You analyse transcripts of phone calls received by an Israeli user. Transcripts come from automatic
         Hebrew speech recognition and may contain errors, missing words or English fragments.
-        Write summary_he and caller_intent in Hebrew. summary_he is 2-4 sentences.
+        Write summary_he and caller_intent in Hebrew.
+        summary_he is 1-3 short sentences about what was said: the topic, requests, answers, decisions, dates,
+        amounts and follow-ups. Write it like a note, straight to the point, with no preamble.
+        Do NOT describe who the caller is or how they relate to the user, the tone or kind of call (short,
+        personal, friendly, business), whether it is spam, or what the call did not contain (e.g. "no request
+        for money") — those are shown separately.
+        DO mention how the call went when it matters for understanding it: it was cut off or ended abruptly,
+        nobody answered or it reached voicemail, the user was put on hold, it was a recorded message, one side
+        couldn't hear the other, a wrong number, or the call screening assistant answered.
+        Example: "אבא שאל אם יש שמן לחנוכה וסיפר שסיים את האימון. השיחה נותקה באמצע." — not
+        "המתקשר הוא אבא של המשתמש, השיחה קצרה ומשפחתית ואין בה בקשה כספית."
         Judge whether the call is unwanted. Recorded or robotic messages, telemarketing, loan / insurance /
         investment offers, surveys and political campaigns are spam. Anything asking for codes, ID numbers,
         passwords or payment details is scam_or_phishing. Calls from people the user plausibly knows,
@@ -60,7 +70,7 @@ object AnalysisPrompt {
     private fun str(desc: String) = mapOf("type" to "string", "description" to desc)
 
     val PROPERTIES: Map<String, Any> = linkedMapOf(
-        "summary_he" to str("2-4 sentence Hebrew summary"),
+        "summary_he" to str("1-3 sentence Hebrew note of what was said, plus how the call went if relevant (cut off, on hold...); no caller description, tone or spam judgement"),
         "verdict" to mapOf("type" to "string", "enum" to listOf("spam", "not_spam", "unsure")),
         "spam_confidence" to mapOf("type" to "number", "description" to "0.0-1.0 probability the call is unwanted"),
         "category" to mapOf(

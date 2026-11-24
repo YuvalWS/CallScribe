@@ -73,7 +73,7 @@ class IvritRunPodTranscriber(
         val req = Request.Builder()
             .url("$baseUrl/$endpointId/run")
             .header("Authorization", "Bearer $apiKey")
-            .post(RunBody(model, diarize, audio.bytes))
+            .post(RunBody(model, diarizeFor(diarize, audio.durationMs), audio.bytes))
             .build()
         http.newCall(req).execute().use { resp ->
             val text = resp.body.string()
@@ -148,6 +148,14 @@ class IvritRunPodTranscriber(
         private const val BLOB = "__CALLSCRIBE_AUDIO__"
         const val EXECUTION_TIMEOUT_MS = 15 * 60_000
         const val TTL_MS = 2 * 60 * 60_000
+
+        /**
+         * Speaker separation needs enough speech to cluster: on very short calls ivrit.ai's diarization fails the whole
+         * job ("No segments meet minimum duration for clustering"), so it's skipped below this length.
+         */
+        const val MIN_DIARIZE_MS = 20_000L
+
+        fun diarizeFor(wanted: Boolean, durationMs: Long) = wanted && (durationMs == 0L || durationMs >= MIN_DIARIZE_MS)
 
         /** The JSON before and after the base64 audio (each half includes the string's quote). Pure — unit-tested. */
         fun envelope(model: String, diarize: Boolean): Pair<String, String> {

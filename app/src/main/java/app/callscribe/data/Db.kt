@@ -49,6 +49,9 @@ interface RecordingDao {
     @Query("UPDATE recordings SET relationship = :tag, relationshipManual = :manual, updatedAt = :now WHERE id = :id")
     suspend fun setRelationship(id: Long, tag: String?, manual: Boolean, now: Long = System.currentTimeMillis())
 
+    @Query("DELETE FROM recordings WHERE id = :id")
+    suspend fun deleteById(id: Long)
+
     @Query("DELETE FROM recordings WHERE fileMissing = 1")
     suspend fun deleteMissing(): Int
 }

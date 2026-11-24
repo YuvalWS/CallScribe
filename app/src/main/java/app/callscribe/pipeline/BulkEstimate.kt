@@ -11,7 +11,7 @@ data class BulkPlan(
     val transcribe: List<RecordingEntity>,
     /** Already transcribed, only missing the summary. */
     val analyzeOnly: List<RecordingEntity>,
-    /** Already done, busy, or audio deleted. */
+    /** Already done, busy, shorter than [MIN_CALL_MS], or audio deleted. */
     val skipped: Int,
     val summarize: Boolean,
 ) {
@@ -21,11 +21,19 @@ data class BulkPlan(
     companion object {
         private val BUSY = setOf(Status.QUEUED, Status.TRANSCRIBING, Status.ANALYZING)
 
+        /**
+         * Calls shorter than this are left out of automatic and bulk processing: there's nothing to transcribe
+         * (ring-outs, hang-ups) but each one still costs a server start. They can still be transcribed by hand.
+         */
+        const val MIN_CALL_MS = 5_000L
+
+        fun tooShort(r: RecordingEntity) = r.durationMs in 1 until MIN_CALL_MS
+
         fun of(rows: List<RecordingEntity>, summarize: Boolean): BulkPlan {
             val tr = mutableListOf<RecordingEntity>()
             val an = mutableListOf<RecordingEntity>()
             for (r in rows) when {
-                r.status in BUSY -> {}
+                r.status in BUSY || tooShort(r) -> {}
                 r.transcriptText == null && !r.fileMissing -> tr += r
                 summarize && r.transcriptText != null && r.verdict == null -> an += r
             }
