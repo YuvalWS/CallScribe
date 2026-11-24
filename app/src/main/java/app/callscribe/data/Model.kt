@@ -128,6 +128,11 @@ data class PolicyEntity(
     val contactGroup: String? = null,
     /** Order among contact-group policies: lower wins when a contact is in several groups. */
     @ColumnInfo(defaultValue = "0") val priority: Int = 0,
+    /**
+     * Retention applies only to calls from this time on (epoch seconds; 0 = all calls). Set when the user picks
+     * "Only calls from now on" so a stricter policy doesn't delete calls that were already on the phone.
+     */
+    @ColumnInfo(defaultValue = "0") val appliesFromSec: Long = 0,
 ) {
     val target: PolicyTarget get() = when {
         callerType != null -> PolicyTarget.CALLER_TYPE

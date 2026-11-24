@@ -49,5 +49,9 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+        <!-- Cancel button on the bulk-processing notification (only our own PendingIntent can reach it). -->
+        <receiver
+            android:name=".pipeline.BulkCancelReceiver"
+            android:exported="false" />
     </application>
 </manifest>

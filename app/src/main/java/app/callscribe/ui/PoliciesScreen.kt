@@ -82,8 +82,34 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     LaunchedEffect(Unit) { graph.db.policies().ensureGroupDefaults() }
-    val save: (PolicyEntity) -> Unit = { p -> scope.launch { graph.db.policies().update(p) } }
-    val remove: (PolicyEntity) -> Unit = { p -> scope.launch { graph.db.policies().delete(p.id) } }
+    // Every change is checked first: if it would delete existing calls right away, the user decides (RetentionGuard).
+    var pending by remember { mutableStateOf<PendingRetentionChange?>(null) }
+    fun nowSec() = System.currentTimeMillis() / 1000
+    fun guarded(
+        title: String, after: suspend (List<PolicyEntity>) -> List<PolicyEntity>,
+        apply: suspend () -> Unit, limit: (suspend () -> Unit)? = null,
+    ) = scope.launch {
+        val impact = RetentionGuard.impactOfPolicies(graph, after(graph.db.policies().all()))
+        if (impact.isEmpty) apply()
+        else pending = PendingRetentionChange(
+            title, impact, apply = { scope.launch { apply() } }, limit = limit?.let { l -> { scope.launch { l() } } },
+        )
+    }
+    val dao = graph.db.policies()
+    val save: (PolicyEntity) -> Unit = { p ->
+        guarded("Save this change?", { all -> all.map { if (it.id == p.id) p else it } },
+            apply = { dao.update(p) }, limit = { dao.update(p.copy(appliesFromSec = nowSec())) })
+    }
+    val remove: (PolicyEntity) -> Unit = { p ->
+        guarded("Remove this policy?", { all -> all.filter { it.id != p.id } }, apply = { dao.delete(p.id) })
+    }
+    val includeOlder: (PolicyEntity) -> Unit = { p ->
+        val all = p.copy(appliesFromSec = 0)
+        guarded("Apply to older calls too?", { list -> list.map { if (it.id == p.id) all else it } }, apply = { dao.update(all) })
+    }
+    val add: (PolicyEntity) -> Unit = { p ->
+        guarded("Add this policy?", { all -> all + p }, apply = { dao.insert(p) }, limit = { dao.insert(p.copy(appliesFromSec = nowSec())) })
+    }
     /** New, more specific policies start from what applied before: the Contacts caller type. */
     val contactBase = policies.firstOrNull { it.callerType == CallerType.CONTACT } ?: PolicyEntity.defaultFor(CallerType.CONTACT)
 
@@ -97,9 +123,7 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
             if (c.moveToFirst()) {
                 val name = c.getString(0) ?: return@use
                 val num = PhoneNumbers.normalize(c.getString(1) ?: "").orEmpty()
-                scope.launch {
-                    graph.db.policies().insert(contactBase.copy(id = 0, callerType = null, displayName = name, numbers = num, transcribe = true, summarize = true))
-                }
+                add(contactBase.copy(id = 0, callerType = null, displayName = name, numbers = num, transcribe = true, summarize = true, appliesFromSec = 0))
             }
         }
     }
@@ -112,9 +136,11 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
         if (granted) scope.launch { groupChoices = graph.contactGroups.titles() }
     }
     val groupPolicies = policies.filter { it.target == PolicyTarget.CONTACT_GROUP }.sortedWith(compareBy({ it.priority }, { it.id }))
-    fun move(from: Int, to: Int) = scope.launch {
-        val list = groupPolicies.toMutableList().apply { add(to, removeAt(from)) }
-        list.forEachIndexed { i, p -> if (p.priority != i) graph.db.policies().update(p.copy(priority = i)) }
+    fun move(from: Int, to: Int) {
+        val list = groupPolicies.toMutableList().apply { add(to, removeAt(from)) }.mapIndexed { i, p -> p.copy(priority = i) }
+        guarded("Change the group order?", { all -> all.map { a -> list.firstOrNull { it.id == a.id } ?: a } }, apply = {
+            list.forEach { p -> if (groupPolicies.first { it.id == p.id }.priority != p.priority) dao.update(p) }
+        })
     }
 
     Page("Policies", onBack) {
@@ -131,7 +157,7 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
 
         Section("Caller types")
         CallerType.entries.forEach { t ->
-            policies.firstOrNull { it.callerType == t }?.let { p -> PolicyCard(callerTypeTitle(t), p, onChange = save) }
+            policies.firstOrNull { it.callerType == t }?.let { p -> PolicyCard(callerTypeTitle(t), p, onChange = save, onIncludeOlder = includeOlder) }
         }
         HorizontalDivider()
 
@@ -140,9 +166,9 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
             Text("Retention only: tags are known after a call is analyzed. A tag policy beats the caller type.", style = MaterialTheme.typography.bodySmall)
             RelationshipTags.ALL.forEach { t ->
                 val p = policies.firstOrNull { it.tag == t }
-                if (p != null) PolicyCard(RelationshipTags.label(t), p, onChange = save, onDelete = { remove(p) })
+                if (p != null) PolicyCard(RelationshipTags.label(t), p, onChange = save, onIncludeOlder = includeOlder, onDelete = { remove(p) })
                 else TextButton(onClick = {
-                    scope.launch { graph.db.policies().insert(contactBase.copy(id = 0, callerType = null, tag = t)) }
+                    add(contactBase.copy(id = 0, callerType = null, tag = t, appliesFromSec = 0))
                 }) { Text("+ Policy for \"${RelationshipTags.label(t)}\"") }
             }
             HorizontalDivider()
@@ -163,7 +189,7 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
         }
         groupPolicies.forEachIndexed { i, p ->
             PolicyCard(
-                p.contactGroup.orEmpty(), p, subtitle = "Priority ${i + 1}", onChange = save, onDelete = { remove(p) },
+                p.contactGroup.orEmpty(), p, subtitle = "Priority ${i + 1}", onChange = save, onIncludeOlder = includeOlder, onDelete = { remove(p) },
                 onUp = if (i > 0) ({ move(i, i - 1) }) else null,
                 onDown = if (i < groupPolicies.lastIndex) ({ move(i, i + 1) }) else null,
             )
@@ -182,13 +208,15 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
             PolicyCard(
                 p.displayName.ifBlank { "…" + p.numbers }, p,
                 subtitle = p.numbers.takeIf { it.isNotBlank() }?.let { "…$it" },
-                onChange = save, onDelete = { remove(p) },
+                onChange = save, onIncludeOlder = includeOlder, onDelete = { remove(p) },
             )
         }
         TextButton(onClick = { picker.launch(Intent(Intent.ACTION_PICK, ContactsContract.CommonDataKinds.Phone.CONTENT_URI)) }) {
             Text("+ Add contact")
         }
     }
+
+    pending?.let { RetentionWarningDialog(it, onDismiss = { pending = null }) }
 
     groupChoices?.let { all ->
         val used = groupPolicies.mapNotNull { it.contactGroup }.toSet()
@@ -203,9 +231,7 @@ fun PoliciesScreen(graph: AppGraph, onBack: () -> Unit, onRetention: () -> Unit)
                         TextButton(onClick = {
                             groupChoices = null
                             val next = (groupPolicies.maxOfOrNull { it.priority } ?: -1) + 1
-                            scope.launch {
-                                graph.db.policies().insert(contactBase.copy(id = 0, callerType = null, contactGroup = title, priority = next))
-                            }
+                            add(contactBase.copy(id = 0, callerType = null, contactGroup = title, priority = next, appliesFromSec = 0))
                         }) { Text(title) }
                     }
                 }
@@ -220,6 +246,7 @@ private fun PolicyCard(
     title: String, p: PolicyEntity, subtitle: String? = null,
     onChange: (PolicyEntity) -> Unit, onDelete: (() -> Unit)? = null,
     onUp: (() -> Unit)? = null, onDown: (() -> Unit)? = null,
+    onIncludeOlder: ((PolicyEntity) -> Unit)? = null,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -242,6 +269,14 @@ private fun PolicyCard(
             }
             if (p.textRetentionDays >= 0) DaysRow("Keep text", p.textRetentionDays, allowForever = false) { onChange(p.copy(textRetentionDays = it)) }
             CloudRow(p) { onChange(p.copy(cloudRetentionDays = it)) }
+            // Only worth saying while the policy deletes something.
+            if (p.appliesFromSec > 0 && (p.audioRetentionDays >= 0 || p.textRetentionDays >= 0 || p.cloudRetentionDays >= 0)) {
+                Text(
+                    "Retention applies to calls from ${Fmt.date(p.appliesFromSec)} on; older calls are kept.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (onIncludeOlder != null) TextButton(onClick = { onIncludeOlder(p) }) { Text("Apply to older calls too") }
+            }
             PolicyChecks.warnings(p).forEach {
                 Text("\u26A0 $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
             }

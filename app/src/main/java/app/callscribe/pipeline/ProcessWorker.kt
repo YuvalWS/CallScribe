@@ -41,6 +41,8 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         const val KEY_ID = "id"
         const val KEY_STEPS = "steps"
         const val KEY_FORCE = "force"
+        /** Part of a bulk run: never fails the lane, no per-call notification, honours cancel and the spending cap. */
+        const val KEY_BULK = "bulk"
         const val STEP_EXPORT = "export"
         const val STEP_TRANSCRIBE = "transcribe"
         const val STEP_ANALYZE = "analyze"
@@ -56,6 +58,16 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         val id = inputData.getLong(KEY_ID, -1)
         val steps = inputData.getString(KEY_STEPS).orEmpty().split(',').filter { it.isNotBlank() }.toSet()
         val force = inputData.getBoolean(KEY_FORCE, false)
+        val bulk = inputData.getBoolean(KEY_BULK, false)
+        if (!bulk) return run(id, steps, force, bulk = false)
+        val row = dao.get(id) ?: return Result.success()
+        if (!graph.bulk.mayProceed(row)) return Result.success()
+        val res = try { run(id, steps, force, bulk = true) } finally { graph.bulk.updateNotification() }
+        // A failed call is recorded on the call; the next one in the lane still runs.
+        return if (res is Result.Failure) Result.success() else res
+    }
+
+    private suspend fun run(id: Long, steps: Set<String>, force: Boolean, bulk: Boolean): Result {
         var row = dao.get(id) ?: return Result.failure()
         // This exact job was already stopped by Android's time limit and its partial transcript saved: don't loop.
         if (timeoutMarks().getString(id.toString(), null) == this.id.toString()) return Result.failure()
@@ -69,8 +81,8 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
 
             if (STEP_TRANSCRIBE in steps && (force || row.transcriptText == null || row.providerJobId != null)) {
                 when (val r = transcribe(row, force)) {
-                    is Outcome.Retry -> return if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else fail(id, r.reason)
-                    is Outcome.Fail -> return fail(id, r.reason)
+                    is Outcome.Retry -> return if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else fail(id, r.reason, bulk)
+                    is Outcome.Fail -> return fail(id, r.reason, bulk)
                     Outcome.Ok -> {}
                 }
                 row = dao.get(id)!!
@@ -80,7 +92,7 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                 analyze(row)
                 row = dao.get(id)!!
             }
-            graph.notifier.notifyResult(row)
+            if (!bulk) graph.notifier.notifyResult(row)
             return Result.success()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e // stopped by WorkManager; it reschedules (or the time-limit handler already recorded why)
@@ -88,16 +100,16 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             Log.w(TAG, "provider error", e)
             return if (e.retryable && runAttemptCount < MAX_ATTEMPTS) {
                 dao.setStatus(id, row.status, e.message); Result.retry()
-            } else fail(id, e.message ?: "error")
+            } else fail(id, e.message ?: "error", bulk)
         } catch (e: Exception) {
             Log.e(TAG, "processing failed", e)
-            return if (runAttemptCount < 2) Result.retry() else fail(id, e.message ?: e.javaClass.simpleName)
+            return if (runAttemptCount < 2) Result.retry() else fail(id, e.message ?: e.javaClass.simpleName, bulk)
         }
     }
 
-    private suspend fun fail(id: Long, reason: String): Result {
+    private suspend fun fail(id: Long, reason: String, bulk: Boolean = false): Result {
         dao.setStatus(id, Status.FAILED, reason)
-        dao.get(id)?.let { graph.notifier.notifyResult(it) }
+        if (!bulk) dao.get(id)?.let { graph.notifier.notifyResult(it) }
         return Result.failure()
     }
 

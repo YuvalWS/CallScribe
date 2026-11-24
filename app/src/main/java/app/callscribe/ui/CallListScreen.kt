@@ -1,6 +1,7 @@
 package app.callscribe.ui
 
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,11 +16,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Subtitles
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -30,7 +34,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -94,13 +101,36 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
     var dateSel by rememberSaveable { mutableStateOf("") }
     var tag by rememberSaveable { mutableStateOf<Relationship?>(null) }
     val setup = rememberSetupStatus(graph)
+    // Selection mode (bulk processing): null = off.
+    var selected by remember { mutableStateOf<Set<Long>?>(null) }
+    var confirm by remember { mutableStateOf<List<RecordingEntity>?>(null) }
+    var pendingKeep by remember { mutableStateOf<PendingRetentionChange?>(null) }
+    BackHandler(enabled = selected != null) { selected = null }
+    var shownIds by remember { mutableStateOf<List<Long>>(emptyList()) }
 
     Scaffold(topBar = {
-        TopAppBar(
+        val sel = selected
+        if (sel == null) TopAppBar(
             title = { Text("CallScribe") },
             actions = {
+                IconButton(onClick = { selected = emptySet() }) { Icon(Icons.Default.Checklist, "Select calls") }
                 IconButton(onClick = { WorkScheduler.scanNow(ctx) }) { Icon(Icons.Default.Refresh, "Rescan") }
                 IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
+            },
+        ) else TopAppBar(
+            title = { Text("${sel.size} selected") },
+            navigationIcon = { IconButton(onClick = { selected = null }) { Icon(Icons.Default.Close, "Stop selecting") } },
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            actions = {
+                val allOn = shownIds.isNotEmpty() && sel.containsAll(shownIds)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(allOn, onCheckedChange = { selected = if (allOn) sel - shownIds.toSet() else sel + shownIds })
+                    Text("All", style = MaterialTheme.typography.labelLarge)
+                }
+                TextButton(enabled = sel.isNotEmpty(), onClick = {
+                    val ready = settings?.let { graph.providers.transcriber(it)?.isConfigured() } == true
+                    if (!ready) onSetup() else confirm = rows.orEmpty().filter { it.id in sel }
+                }) { Text("Process") }
             },
         )
     }) { pad ->
@@ -122,6 +152,7 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                         CallSearch.matches(it, query) && (dateRange?.contains(it.callTimeSec) ?: true)
                 }
             }
+            shownIds = remember(shown) { shown.map { it.id } }
             Text(
                 (if (shown.size != all.size) "showing ${shown.size} of ${all.size}" else "${all.size} recordings") +
                     " · $processed transcribed · spent ${Fmt.usd(total)}",
@@ -147,6 +178,11 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
                 DateFilterChip(dateSel) { dateSel = it }
             }
             TagFilterRow(tag) { tag = it }
+            BulkBanner(graph, all)
+            if (selected != null) Text(
+                "Tap calls to select them, or use All to select every call matching the search and filters.",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
             if (rows == null) return@Column
             if (shown.isEmpty()) {
                 Text(
@@ -162,10 +198,13 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
             val ready = settings?.let { graph.providers.transcriber(it)?.isConfigured() } == true
             LazyColumn(Modifier.fillMaxSize()) {
                 items(shown, key = { it.id }) { r ->
+                    val sel = selected
                     CallRow(
                         r,
-                        onClick = { onOpen(r.id) },
-                        onToggleKeep = { scope.launch { graph.db.recordings().setKeepForever(r.id, !r.keepForever) } },
+                        selected = sel?.contains(r.id),
+                        onClick = { if (sel != null) selected = if (r.id in sel) sel - r.id else sel + r.id else onOpen(r.id) },
+                        onLongClick = { selected = (sel ?: emptySet()) + r.id },
+                        onToggleKeep = { toggleKeep(scope, graph, r) { pendingKeep = it } },
                         onProcess = { if (ready) scope.launch { processNow(ctx, graph, r) } else onSetup() },
                     )
                     HorizontalDivider()
@@ -173,13 +212,23 @@ fun CallListScreen(graph: AppGraph, onOpen: (Long) -> Unit, onSettings: () -> Un
             }
         }
     }
+    pendingKeep?.let { RetentionWarningDialog(it, onDismiss = { pendingKeep = null }) }
+    confirm?.let { rowsToProcess ->
+        BulkConfirmDialog(graph, rowsToProcess, onDismiss = { confirm = null }, onStarted = { confirm = null; selected = null })
+    }
 }
 
+/** [selected] null = not in selection mode. Long-press starts selecting. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun CallRow(r: RecordingEntity, onClick: () -> Unit, onToggleKeep: () -> Unit, onProcess: () -> Unit) {
+private fun CallRow(
+    r: RecordingEntity, selected: Boolean?, onClick: () -> Unit, onLongClick: () -> Unit, onToggleKeep: () -> Unit, onProcess: () -> Unit,
+) {
     val busy = r.status in setOf(Status.QUEUED, Status.TRANSCRIBING, Status.ANALYZING)
-    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(start = 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+    Row(Modifier.fillMaxWidth().combinedClickable(onClick = onClick, onLongClick = onLongClick)
+        .padding(start = if (selected != null) 4.dp else 16.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
+        if (selected != null) Checkbox(selected, onCheckedChange = { onClick() })
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -206,6 +255,7 @@ private fun CallRow(r: RecordingEntity, onClick: () -> Unit, onToggleKeep: () ->
             val line = r.callerIntent ?: r.summary ?: r.transcriptText ?: (if (r.status == Status.FAILED) r.error else null)
             if (line != null) Text(line, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
         }
+        if (selected != null) return@Row // row actions are hidden while selecting
         IconButton(onClick = onToggleKeep, modifier = Modifier.semantics { contentDescription = if (r.keepForever) "Kept forever" else "Keep forever" }) {
             Icon(if (r.keepForever) Icons.Default.Bookmark else Icons.Default.BookmarkBorder, null,
                 tint = if (r.keepForever) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)

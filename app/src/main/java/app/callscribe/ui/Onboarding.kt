@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudUpload
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.Lock
@@ -214,6 +215,7 @@ private fun SetupStep.ui(): StepUi = when (this) {
         AnalyzerProviderFields(c.graph, c.settings)
     }
     SetupStep.POLICY -> StepUi(Icons.Default.Tune) { PolicyStep(it.graph, it.settings.autoEnabled) }
+    SetupStep.EXISTING -> StepUi(Icons.Default.History) { ExistingStep(it.graph, it.status, it.settings) }
     SetupStep.BACKUP -> StepUi(Icons.Default.CloudUpload) { BackupStep(it.graph) }
     SetupStep.DONE -> StepUi(Icons.Default.CheckCircle) { DoneStep(it.status) }
 }
@@ -342,6 +344,67 @@ private fun PolicyStep(graph: AppGraph, autoEnabled: Boolean) {
         }
     }
     Text("Automatic processing only runs once transcription is set up.", style = MaterialTheme.typography.bodySmall)
+}
+
+/** Which existing calls to process during onboarding. */
+private enum class ExistingChoice(val title: String) { NONE("None for now"), RECENT("The last 30 days"), ALL("All of them") }
+
+@Composable
+private fun ExistingStep(graph: AppGraph, st: SetupStatus, s: AppSettings) {
+    val scope = rememberCoroutineScope()
+    val rows by graph.db.recordings().observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
+    val run by graph.bulk.run.collectAsStateWithLifecycle()
+    var choice by rememberSaveable { mutableStateOf(ExistingChoice.NONE) }
+    var started by rememberSaveable { mutableStateOf(false) }
+    Body("New calls follow the choice you just made. Calls already on the phone (${st.recordingCount}) are only processed if you say so.")
+    if (!st.transcriberConfigured) {
+        StatusLine(false, "", "Set up transcription first")
+        Text("You can do it any time later: on the call list, tap the select button, pick calls (or All) and tap Process.", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    if (started && run != null) {
+        StatusLine(true, "Started — progress is shown on the call list and in a notification", "")
+        return
+    }
+    val monthAgo = System.currentTimeMillis() / 1000 - 30L * 86_400
+    ExistingChoice.entries.forEach { c ->
+        val on = c == choice
+        val subset = when (c) { ExistingChoice.NONE -> emptyList(); ExistingChoice.RECENT -> rows.filter { it.callTimeSec >= monthAgo }; ExistingChoice.ALL -> rows }
+        val est = remember(subset, s) { if (c == ExistingChoice.NONE) null else estimateFor(graph, s, subset, rows, summarize = true) }
+        Card(
+            Modifier.fillMaxWidth().clickable { choice = c },
+            border = if (on) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+        ) {
+            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
+                RadioButton(on, { choice = c })
+                Column(Modifier.padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(c.title, style = MaterialTheme.typography.titleMedium)
+                    if (est == null) Text("You can process any call later from the call list.", style = MaterialTheme.typography.bodySmall)
+                    else if (est.first.isEmpty) Text(
+                        if (subset.isEmpty()) "No calls in this period." else "Nothing left to process here.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    else if (on) EstimateLines(est.first, est.second)
+                    else Text(
+                        "${est.second.calls} calls · " + (if (est.second.isFree) "free" else "about ${Fmt.usd(est.second.usd)}"),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+    }
+    val pick = remember(choice, rows, s) {
+        when (choice) {
+            ExistingChoice.NONE -> null
+            ExistingChoice.RECENT -> estimateFor(graph, s, rows.filter { it.callTimeSec >= monthAgo }, rows, summarize = true)
+            ExistingChoice.ALL -> estimateFor(graph, s, rows, rows, summarize = true)
+        }
+    }
+    if (pick != null && !pick.first.isEmpty) {
+        Button(onClick = { scope.launch { graph.bulk.start(pick.first, pick.second.capUsd); started = true } }) {
+            Text("Process ${pick.second.calls} calls" + if (pick.second.isFree) "" else " · ~${Fmt.usd(pick.second.usd)}")
+        }
+    }
 }
 
 @Composable

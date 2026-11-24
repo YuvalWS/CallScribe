@@ -13,6 +13,7 @@ import app.callscribe.rules.PolicyChecks
 import app.callscribe.rules.PolicyResolver
 import app.callscribe.rules.Resolution.Level
 import app.callscribe.rules.Retention
+import app.callscribe.rules.RetentionImpact
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -201,7 +202,7 @@ class PolicyChecksTest {
     }
 }
 
-/** Runs the real v4→v6 policy SQL on SQLite against the exported v2 policies table and compares with the exported v6 schema. */
+/** Runs the real v4→v7 policy SQL on SQLite against the exported v2 policies table and compares with the exported v7 schema. */
 class MigrationTest {
     private val schemas = File("schemas/app.callscribe.data.AppDatabase")
 
@@ -230,8 +231,9 @@ class MigrationTest {
             }
             PolicyMigrations.SQL_4_5.forEach { st.execute(it) }
             PolicyMigrations.SQL_5_6.forEach { st.execute(it) }
+            PolicyMigrations.SQL_6_7.forEach { st.execute(it) }
             DriverManager.getConnection("jdbc:sqlite::memory:").use { fresh ->
-                fresh.createStatement().execute(policiesCreateSql(6))
+                fresh.createStatement().execute(policiesCreateSql(7))
                 assertEquals(columns(fresh), columns(c))
             }
             return st.executeQuery(
@@ -276,5 +278,35 @@ class MigrationTest {
         val rows = migrate(*LabelKind.entries.map { "('${it.name}', '', '', 1, 1, -1, -1)" }.toTypedArray())
         val names = CallerType.entries.map { it.name }.toSet()
         rows.forEach { assertTrue(it, it.substringBefore('|') in names) }
+    }
+}
+
+class RetentionStartTest {
+    @Test fun policyOnlyAppliesToCallsFromItsStartDate() {
+        val p = PolicyEntity.defaultFor(CallerType.UNKNOWN_NUMBER).copy(audioRetentionDays = 7, textRetentionDays = 7, cloudRetentionDays = 7)
+        val rows = listOf(rec(1, LabelKind.UNKNOWN_NUMBER, 40), rec(2, LabelKind.UNKNOWN_NUMBER, 10))
+        val from = NOW - 20 * DAY // call 1 (40 days old) predates the policy's start, call 2 doesn't
+        val plan = Retention.plan(rows, listOf(p.copy(appliesFromSec = from)), NOW)
+        assertEquals(listOf(2L), plan.trashAudio.map { it.id })
+        assertEquals(listOf(2L), plan.deleteText.map { it.id })
+        assertEquals(listOf(2L), plan.cloudAudio.map { it.id })
+    }
+
+    @Test fun impactListsOnlyNewlyDueCalls() {
+        val rows = listOf(rec(1, LabelKind.UNKNOWN_NUMBER, 40), rec(2, LabelKind.UNKNOWN_NUMBER, 10), rec(3, LabelKind.UNKNOWN_NUMBER, 3))
+        val before = PolicyEntity.defaultFor(CallerType.UNKNOWN_NUMBER).copy(audioRetentionDays = 30)
+        val after = before.copy(audioRetentionDays = 7, textRetentionDays = 30)
+        val impact = RetentionImpact.of(Retention.plan(rows, listOf(before), NOW), Retention.plan(rows, listOf(after), NOW))
+        assertEquals(listOf(2L), impact.audio.map { it.id }) // call 1 was already due
+        assertEquals(listOf(1L), impact.text.map { it.id })
+        assertTrue(impact.cloud.isEmpty()) // cloud "same as phone" waits for the actual deletion
+        assertEquals(listOf(2L, 1L), impact.calls.map { it.id })
+    }
+
+    @Test fun relaxingAPolicyHasNoImpact() {
+        val rows = listOf(rec(1, LabelKind.UNKNOWN_NUMBER, 40))
+        val strict = PolicyEntity.defaultFor(CallerType.UNKNOWN_NUMBER).copy(audioRetentionDays = 7)
+        val impact = RetentionImpact.of(Retention.plan(rows, listOf(strict), NOW), Retention.plan(rows, listOf(strict.copy(audioRetentionDays = -1)), NOW))
+        assertTrue(impact.isEmpty)
     }
 }

@@ -75,4 +75,10 @@ class SetupStateTest {
         assertEquals(StartingPolicy.MANUAL, StartingPolicy.current(false))
         assertEquals(StartingPolicy.AUTOMATIC, StartingPolicy.current(true))
     }
+
+    @Test fun existingCallsStepComesAfterNewCallPolicyAndIsOptional() {
+        val order = SetupStep.entries
+        assertTrue(order.indexOf(SetupStep.EXISTING) == order.indexOf(SetupStep.POLICY) + 1)
+        assertTrue(SetupStep.EXISTING.skippable)
+    }
 }

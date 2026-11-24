@@ -76,6 +76,16 @@ The editor shows soft warnings under a policy for odd combinations (`PolicyCheck
 - Cloud N days shorter than the phone recording period → "The cloud copy expires before the phone copy."
 - Summarize is forced off when transcribe is off (that one *is* enforced: it cannot work).
 
+## Changes never delete existing calls silently (DB v7)
+Every policy change (edit, add, remove, group reorder, "apply to older calls") and removing *keep forever* from a call
+is checked first (`RetentionGuard`, `RetentionImpact.of(before, after)`, unit-tested): if it makes existing calls due
+now, a dialog lists the counts (recordings to trash, transcripts deleted, Drive copies deleted) and the calls, with
+**Apply to these too** · **Only calls from now on** · Cancel. "Only calls from now on" saves the policy with
+`appliesFromSec = now`: retention skips calls recorded before it (local and cloud). The policy card then says
+"Retention applies to calls from <date> on" with an *Apply to older calls too* button (checked the same way).
+Removing a policy or reordering groups offers only Apply / Cancel. Existing calls are never flagged keep-forever
+for this: that flag stays the user's own choice.
+
 ## Explaining the decision
 The call page shows which policy applied and why (`PolicyResolver.explain`), the effective values, and, if the
 call is marked Keep forever, that this overrides retention.

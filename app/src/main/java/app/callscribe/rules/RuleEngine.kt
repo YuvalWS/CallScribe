@@ -168,6 +168,7 @@ object Retention {
         for (r in rows) {
             if (keptForever(r)) continue
             val p = PolicyResolver.explain(r, policies, groups, tagOf(r)).policy
+            if (r.callTimeSec < p.appliesFromSec) continue // the policy was set to "only calls from now on"
             val age = nowSec - r.callTimeSec
             if (due(p.audioRetentionDays, age) && !r.fileMissing && r.audioDeletedAt == null) audio += r
             val hasText = r.transcriptText != null || r.summary != null
@@ -182,6 +183,30 @@ object Retention {
             }
         }
         return RetentionPlan(audio, text, cloudAudio, cloudText)
+    }
+}
+
+/** What a policy change would delete right away: calls due after the change that weren't due before. */
+data class RetentionImpact(
+    val audio: List<RecordingEntity>,
+    val text: List<RecordingEntity>,
+    val cloud: List<RecordingEntity>,
+) {
+    val isEmpty get() = audio.isEmpty() && text.isEmpty() && cloud.isEmpty()
+    val calls get() = (audio + text + cloud).distinctBy { it.id }
+    val audioBytes get() = audio.sumOf { it.sizeBytes }
+
+    companion object {
+        /** Pure — unit-tested. [plan] is [Retention.plan] with everything but the policies fixed. */
+        fun of(before: RetentionPlan, after: RetentionPlan): RetentionImpact {
+            fun new(a: List<RecordingEntity>, b: List<RecordingEntity>): List<RecordingEntity> {
+                val had = b.map { it.id }.toSet()
+                return a.filter { it.id !in had }
+            }
+            val cloudBefore = (before.cloudAudio + before.cloudText).distinctBy { it.id }
+            val cloudAfter = (after.cloudAudio + after.cloudText).distinctBy { it.id }
+            return RetentionImpact(new(after.trashAudio, before.trashAudio), new(after.deleteText, before.deleteText), new(cloudAfter, cloudBefore))
+        }
     }
 }
 

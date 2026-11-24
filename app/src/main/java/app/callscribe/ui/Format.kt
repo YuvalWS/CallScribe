@@ -17,6 +17,8 @@ import java.util.Locale
 object Fmt {
     private val dt = DateTimeFormatter.ofPattern("dd/MM/yy HH:mm")
     fun time(sec: Long): String = dt.format(Instant.ofEpochSecond(sec).atZone(ZoneId.systemDefault()))
+    private val d = DateTimeFormatter.ofPattern("d MMM yyyy")
+    fun date(sec: Long): String = d.format(Instant.ofEpochSecond(sec).atZone(ZoneId.systemDefault()))
     fun duration(ms: Long): String { val s = ms / 1000; return "%d:%02d".format(s / 60, s % 60) }
     fun usd(v: Double?): String = when {
         v == null -> "—"

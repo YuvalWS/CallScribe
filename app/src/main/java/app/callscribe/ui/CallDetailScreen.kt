@@ -79,6 +79,8 @@ fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () 
     val settings by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
+    var pendingKeep by remember { mutableStateOf<PendingRetentionChange?>(null) }
+    pendingKeep?.let { RetentionWarningDialog(it, onDismiss = { pendingKeep = null }) }
 
     Scaffold(topBar = {
         TopAppBar(
@@ -100,7 +102,7 @@ fun CallDetailScreen(graph: AppGraph, id: Long, onBack: () -> Unit, onSetup: () 
             Text(rec.displayName, style = MaterialTheme.typography.bodySmall)
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 IconButton(
-                    onClick = { scope.launch { graph.db.recordings().setKeepForever(rec.id, !rec.keepForever) } },
+                    onClick = { toggleKeep(scope, graph, rec) { pendingKeep = it } },
                     modifier = androidx.compose.ui.Modifier.semantics { contentDescription = if (rec.keepForever) "Kept forever" else "Keep forever" },
                 ) {
                     Icon(if (rec.keepForever) Icons.Default.Bookmark else Icons.Default.BookmarkBorder, null,

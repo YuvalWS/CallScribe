@@ -108,9 +108,12 @@ object PolicyMigrations {
         // Samsung's other labels no longer have a caller type: those calls follow "Unknown numbers".
         "DELETE FROM policies WHERE groupKind IN ('FRAUD', 'OTHER_LABEL')",
     )
+
+    /** v6 → v7: a policy's retention can start from a date ("only calls from now on"). 0 = all calls, as before. */
+    val SQL_6_7 = listOf("ALTER TABLE policies ADD COLUMN appliesFromSec INTEGER NOT NULL DEFAULT 0")
 }
 
-@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 6, exportSchema = true)
+@Database(entities = [RecordingEntity::class, PolicyEntity::class], version = 7, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun recordings(): RecordingDao
     abstract fun policies(): PolicyDao
@@ -165,9 +168,13 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) = PolicyMigrations.SQL_6_7.forEach(db::execSQL)
+        }
+
         fun create(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "callscribe.db")
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .build()
     }
 }

@@ -18,11 +18,16 @@ you configure it.
   set by the AI and correctable on the call page (your choice is never overwritten). Filter and search by tag
   (English or Hebrew, e.g. "משפחה").
 - **Transcribe** button on every row and on the call page; **Analyze** for the AI summary.
-- **Policies** per caller type (spam, fraud, other labels, unknown, private, contacts) and per contact:
-  transcribe automatically? summarize? how long to keep the recording? A contact's policy overrides its group.
+- **Bulk processing**: tap the select button (or long-press a call), tick calls or *All* (everything matching the
+  search and filters) and tap *Process*. You see the number of calls, audio minutes, an estimated cost and time
+  first (from your own past costs when there are enough); the run stops by itself at twice the estimate and can be
+  cancelled from the notification. Setup also offers to process existing calls (none / last 30 days / all).
+- **Policies** per caller type (contacts, unknown, private, spam or fraud), contact group and contact:
+  transcribe automatically? summarize? how long to keep the recording? The most specific policy wins.
 - **Retention**: recordings past their period are moved to the system trash (recoverable 30 days) after you
   confirm, or silently if you grant *Media management* access. Transcripts are kept by default; tick
-  *Also delete transcript & summary* to expire text too (runs daily).
+  *Also delete transcript & summary* to expire text too (runs daily). A policy change that would delete existing
+  calls right away shows what it affects first, with *Only calls from now on* to leave existing calls alone.
 - Long calls are compressed on the phone (16 kHz mono AAC) before upload.
 - **On-device transcription** (optional, free, offline): download ivrit.ai's Hebrew Zipformer (72 MB) in
   Settings → Providers → *On this phone*. Runs with sherpa-onnx; ~25 s per minute of audio on a Galaxy S20 FE.

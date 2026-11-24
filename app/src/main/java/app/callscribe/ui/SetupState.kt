@@ -16,6 +16,7 @@ enum class SetupStep(val heading: String, val skippable: Boolean = true, val isD
     TRANSCRIPTION("Set up transcription", isDone = { it.transcriberConfigured }),
     ANALYSIS("AI summary & spam check", isDone = { it.analyzerConfigured }),
     POLICY("What should happen to new calls?"),
+    EXISTING("Process the calls you already have?"),
     BACKUP("Back up to Google Drive?", isDone = { it.driveBackupOn }),
     DONE("You're all set"),
 }

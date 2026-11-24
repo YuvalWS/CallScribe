@@ -30,6 +30,8 @@ class AppGraph(context: Context) {
     /** Optional Google Drive backup (off by default). */
     val drive by lazy { app.callscribe.backup.DriveBackup(context.applicationContext, this) }
     val contactGroups = ContactGroupsReader(context)
+    /** Processing many calls at once (selection on the call list, onboarding). */
+    val bulk by lazy { app.callscribe.pipeline.BulkProcessor(context.applicationContext, this) }
 
     private val syncMutex = Mutex()
     private val store = object : RecordingStore {
