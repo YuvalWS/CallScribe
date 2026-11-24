@@ -29,7 +29,7 @@ class TranscribeProgress(private val context: Context, private val row: Recordin
     }
 
     private fun build(pct: Int) = NotificationCompat.Builder(context, CHANNEL)
-        .setSmallIcon(R.drawable.ic_launcher_foreground)
+        .setSmallIcon(R.drawable.ic_stat_callscribe)
         .setContentTitle("Transcribing on this phone")
         .setContentText((row.counterparty ?: row.samsungLabel ?: row.displayName) + " · $pct%")
         .setProgress(100, pct, false)

@@ -39,7 +39,7 @@ class DebugWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx,
         androidx.work.ForegroundInfo(
             999,
             androidx.core.app.NotificationCompat.Builder(applicationContext, app.callscribe.pipeline.Notifier.CHANNEL)
-                .setSmallIcon(app.callscribe.R.drawable.ic_launcher_foreground).setContentTitle("Debug").build(),
+                .setSmallIcon(app.callscribe.R.drawable.ic_stat_callscribe).setContentTitle("Debug").build(),
         )
 
     override suspend fun doWork(): Result {

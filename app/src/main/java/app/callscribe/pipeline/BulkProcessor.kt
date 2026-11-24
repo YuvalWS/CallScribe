@@ -217,7 +217,7 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
         val spent = "spent ${app.callscribe.ui.Fmt.usd(p.spentUsd)}"
         val failed = if (p.failed > 0) " · ${p.failed} failed" else ""
         val b = NotificationCompat.Builder(context, CHANNEL)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_stat_callscribe)
             .setContentIntent(open)
             .setOnlyAlertOnce(true)
         if (p.running && r.stoppedReason == null) {

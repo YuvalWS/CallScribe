@@ -8,8 +8,10 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
-// CI passes -PbuildNumber=<run number>: versionCode = N, versionName = <callscribe.version>.N (see docs/plans/cicd.md).
+// CI passes -PbuildNumber=N (the release number) and, off main, -PversionSuffix=-dev.<run>:
+// versionCode = N, versionName = <callscribe.version>.N<suffix> (see docs/plans/cicd.md).
 val buildNumber = providers.gradleProperty("buildNumber").orNull?.toInt()
+val versionSuffix = providers.gradleProperty("versionSuffix").orNull.orEmpty()
 val baseVersion = providers.gradleProperty("callscribe.version").getOrElse("0.1")
 
 // Release signing from environment variables (CI secrets); falls back to the debug key when absent.
@@ -36,7 +38,7 @@ android {
         minSdk = 33
         targetSdk = 36
         versionCode = buildNumber ?: 1
-        versionName = if (buildNumber != null) "$baseVersion.$buildNumber" else "$baseVersion.0-local"
+        versionName = if (buildNumber != null) "$baseVersion.$buildNumber$versionSuffix" else "$baseVersion.0-local"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // On-device transcription ships native libraries for 64-bit ARM only (every phone this app targets).
         ndk { abiFilters += "arm64-v8a" }

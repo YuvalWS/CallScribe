@@ -1,4 +1,4 @@
-# Plan: easier provider setup (status: §1 and §3 built; §2 not started)
+# Plan: easier provider setup (status: §1, §3 built; §2 built for Gemini and OpenRouter; §4 measured)
 
 Today the user creates a RunPod endpoint by hand, copies its ID, creates an API key, and types model names.
 That's the hardest part of onboarding. This plan makes it mostly automatic without adding a CallScribe server.
@@ -34,6 +34,14 @@ RunPod offers it) and a button that opens that page; the user pastes the key. Li
 
 ## 2. Choosing models: pre-selected, with an online list
 
+**Built for Gemini and OpenRouter** (`providers/ModelCatalog.kt`, "Choose from list" under the model field, in Settings
+and onboarding). The list is fetched only when tapped (free call): Gemini `models.list` with the user's key, filtered to
+text `generateContent` models; OpenRouter's public `/api/v1/models`, filtered to `structured_outputs`, cheapest first
+with "≈ $ / call" (2,500 tokens in, 300 out). The recommended and current models are pinned on top; "Use recommended"
+resets. Not done: Claude (keeps its fixed list with prices), ivrit.ai models, "saved model retired" detection.
+
+Original plan:
+
 Hard-coding one model name ages badly; making users type names is error-prone. Do both:
 
 - **Default pre-selected** — a known-good model per provider shipped with the app (today's defaults), so a new user
@@ -52,6 +60,19 @@ Hard-coding one model name ages badly; making users type names is error-prone. D
 - A failure never blocks Next: settings are saved and can be fixed later in Settings → Providers; the call-list
   banner keeps saying "transcription not set up" until it works.
 - Later: the "Try it on your latest call" card on the existing-calls step is the real end-to-end check.
+
+## 4. RunPod cost: what the API can tell (measured 2026-11-24)
+
+- The job status has `executionTime` / `delayTime` only — no price. The app's per-call cost is executionTime × the
+  price setting, which **undercounts**: RunPod bills the worker from start to stop (cold start + execution + 5 s idle).
+- Measured on the user's endpoint: a 20 s silent clip, delayTime 9.8 s, executionTime 3.1 s → app formula $0.0006,
+  **actual balance drop $0.0067**, which appeared about 5 minutes after the job.
+- The GraphQL API (`https://api.runpod.io/graphql`, `myself { clientBalance currentSpendPerHr }`) works with the
+  user's restricted key. The REST catalog (`/v2/catalog/gpus`, has `price.serverless`) needs `catalog:read`; billing
+  history and `/v2/billing/balance` need `billing:read` — the user's key has neither. GraphQL `gpuTypes` has no
+  serverless price field.
+- Options: (a) per-call estimate = (delay + execution + idle timeout) × price; (b) bulk runs record the balance before
+  and ~6 min after, and show the real total; (c) with a `billing:read` key, per-endpoint billing history (exact).
 
 ## Open questions
 

@@ -48,13 +48,20 @@ jobs:
 
       - name: Version
         id: version
+        # Releases are numbered consecutively: N = highest v*.N release tag + 1. Builds that aren't releases (dev, PRs)
+        # carry the number of the release they lead up to, plus "-dev.<run>", so they never get ahead of it.
         run: |
           base=$(grep '^callscribe.version=' gradle.properties | cut -d= -f2)
-          echo "name=${base}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "Building ${base}.${GITHUB_RUN_NUMBER} (versionCode ${GITHUB_RUN_NUMBER})"
+          last=$(git ls-remote --tags origin 'refs/tags/v*' | sed -E 's#.*refs/tags/v[0-9]+\.[0-9]+\.([0-9]+)$##;t;d' | sort -n | tail -1)
+          n=$(( ${last:-0} + 1 ))
+          if [ "$IS_RELEASE" = "true" ]; then suffix=""; else suffix="-dev.${GITHUB_RUN_NUMBER}"; fi
+          echo "number=${n}" >> "$GITHUB_OUTPUT"
+          echo "suffix=${suffix}" >> "$GITHUB_OUTPUT"
+          echo "name=${base}.${n}${suffix}" >> "$GITHUB_OUTPUT"
+          echo "Building ${base}.${n}${suffix} (versionCode ${n})"
 
       - name: Unit tests
-        run: ./gradlew :app:testDebugUnitTest -PbuildNumber=${{ github.run_number }}
+        run: ./gradlew :app:testDebugUnitTest -PbuildNumber=${{ steps.version.outputs.number }} -PversionSuffix=${{ steps.version.outputs.suffix }}
 
       - name: Upload test reports
         if: failure()
@@ -68,7 +75,7 @@ jobs:
       - name: Build debug APK
         if: env.IS_RELEASE != 'true'
         run: |
-          ./gradlew :app:assembleDebug -PbuildNumber=${{ github.run_number }}
+          ./gradlew :app:assembleDebug -PbuildNumber=${{ steps.version.outputs.number }} -PversionSuffix=${{ steps.version.outputs.suffix }}
           mv app/build/outputs/apk/debug/app-debug.apk "callscribe-${{ steps.version.outputs.name }}-debug.apk"
 
       - name: Upload debug APK
@@ -103,7 +110,7 @@ jobs:
           CALLSCRIBE_KEY_ALIAS: ${{ secrets.CALLSCRIBE_KEY_ALIAS }}
           CALLSCRIBE_KEY_PASSWORD: ${{ secrets.CALLSCRIBE_KEY_PASSWORD }}
         run: |
-          ./gradlew :app:assembleRelease -PbuildNumber=${{ github.run_number }}
+          ./gradlew :app:assembleRelease -PbuildNumber=${{ steps.version.outputs.number }} -PversionSuffix=${{ steps.version.outputs.suffix }}
           mv app/build/outputs/apk/release/app-release.apk "callscribe-${{ steps.version.outputs.name }}.apk"
           rm -f "$RUNNER_TEMP/release.jks"
 

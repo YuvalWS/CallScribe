@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
@@ -31,6 +32,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
 import app.callscribe.data.AppSettings
 import app.callscribe.data.SecretStore
+import app.callscribe.providers.ModelCatalog
+import app.callscribe.providers.ModelOption
 import app.callscribe.providers.ProviderError
 import app.callscribe.providers.ivrit.RunPodSetup
 import app.callscribe.providers.ondevice.OnDeviceTranscriber
@@ -172,7 +175,11 @@ private fun GeminiSection(graph: AppGraph, st: AppSettings) {
     var pin by remember { mutableStateOf(st.geminiPriceIn.toString()) }
     var pout by remember { mutableStateOf(st.geminiPriceOut.toString()) }
     KeyField(graph, SecretStore.Key.GEMINI_API_KEY, "Gemini API key")
-    Field("Model (e.g. gemini-3.5-flash-lite)", model) { model = it.trim() }
+    Field("Model", model) { model = it.trim() }
+    ModelPicker(current = model, recommended = AppSettings().geminiModel, onPick = { model = it }) {
+        val key = graph.secrets.get(SecretStore.Key.GEMINI_API_KEY) ?: throw ProviderError("Save your Gemini API key first.", false)
+        ModelCatalog.gemini(key)
+    }
     Field("Requests per minute allowed", rpm, KeyboardType.Number) { rpm = it }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Field("$ / M input tokens", pin, KeyboardType.Decimal, Modifier.weight(1f)) { pin = it }
@@ -199,6 +206,7 @@ private fun OpenRouterSection(graph: AppGraph, st: AppSettings) {
     var model by remember { mutableStateOf(st.openrouterModel) }
     KeyField(graph, SecretStore.Key.OPENROUTER_API_KEY, "OpenRouter API key")
     Field("Model (must support structured outputs)", model) { model = it.trim() }
+    ModelPicker(current = model, recommended = AppSettings().openrouterModel, onPick = { model = it }) { ModelCatalog.openRouter() }
     SaveAndTest(
         onSave = { graph.settings.update { it.copy(openrouterModel = model) } },
         onTest = { graph.providers.analyzer(graph.settings.get())!!.test() },
@@ -326,5 +334,63 @@ private fun ResultCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * "Choose from list": fetches the provider's models only when tapped (free call, the user's own key), then shows them
+ * in a searchable dialog. The app's recommended model is marked; tapping one fills the model field (Save applies it).
+ */
+@Composable
+private fun ModelPicker(current: String, recommended: String, onPick: (String) -> Unit, load: suspend () -> List<ModelOption>) {
+    val scope = rememberCoroutineScope()
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var models by remember { mutableStateOf<List<ModelOption>?>(null) }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(enabled = !loading, onClick = {
+            scope.launch {
+                loading = true; error = null
+                try { models = load() } catch (e: Exception) { error = e.message ?: e.javaClass.simpleName }
+                loading = false
+            }
+        }) { Text(if (loading) "Loading models…" else "Choose from list") }
+        if (current != recommended) {
+            androidx.compose.material3.TextButton(onClick = { onPick(recommended) }) { Text("Use recommended") }
+        }
+    }
+    error?.let { Text("Couldn't load the list: $it", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+    models?.let { list ->
+        var query by remember { mutableStateOf("") }
+        // The recommended and current models first, then the provider's order (OpenRouter: cheapest first).
+        val ordered = list.sortedBy { if (it.id == recommended) 0 else if (it.id == current) 1 else 2 }
+        val shown = ordered.filter { query.isBlank() || query.lowercase() in (it.id + " " + it.name).lowercase() }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { models = null },
+            confirmButton = { androidx.compose.material3.TextButton(onClick = { models = null }) { Text("Close") } },
+            title = { Text("Choose a model") },
+            text = {
+                androidx.compose.foundation.layout.Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(query, { query = it }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Search ${list.size} models") })
+                    androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 420.dp)) {
+                        items(shown.size) { i ->
+                            val m = shown[i]
+                            androidx.compose.foundation.layout.Column(
+                                Modifier.fillMaxWidth().clickable { onPick(m.id); models = null }.padding(vertical = 8.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    RadioButton(m.id == current, { onPick(m.id); models = null })
+                                    Text(m.name, fontWeight = if (m.id == recommended) FontWeight.SemiBold else null)
+                                }
+                                val note = listOfNotNull(m.id.takeIf { it != m.name }, m.price, "recommended".takeIf { m.id == recommended })
+                                if (note.isNotEmpty()) Text(note.joinToString(" · "), style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(start = 48.dp))
+                            }
+                        }
+                    }
+                }
+            },
+        )
     }
 }

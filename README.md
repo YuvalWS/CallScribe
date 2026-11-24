@@ -143,11 +143,11 @@ release APK is signed with your debug key.
 | Event | What runs | Output |
 |---|---|---|
 | PR into `dev` or `main`, push to `dev` | unit tests + `assembleDebug` | debug APK as a workflow artifact (kept 3 days) |
-| push / merge to `main` | unit tests + signed R8 `assembleRelease` | GitHub Release `v0.1.<run>` with the APK and notes from the commits |
+| push / merge to `main` | unit tests + signed R8 `assembleRelease` | GitHub Release `v0.1.<N>` with the APK and notes from the commits |
 
-Docs-only changes (`*.md`, `docs/**`) don't trigger a run. Versions are `versionCode = <run number>`,
-`versionName = <callscribe.version in gradle.properties>.<run number>`, so every release installs as an
-update over the previous one.
+Docs-only changes (`*.md`, `docs/**`) don't trigger a run. Releases are numbered consecutively
+(`versionName = <callscribe.version in gradle.properties>.<N>`, `versionCode = N`, N = last release + 1), so every
+release installs as an update over the previous one. Dev builds carry the upcoming release's number plus `-dev.<run>`.
 
 **Cost:** the repo is public, so GitHub Actions minutes and artifact storage are free and unlimited
 on the free plan. (A private copy would get ≈ 2,000 Linux minutes a month — roughly 150 PR runs plus

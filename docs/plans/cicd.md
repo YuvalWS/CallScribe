@@ -65,11 +65,12 @@ Other details:
 
 ## 4. Versioning
 - `gradle.properties` holds the human part: `callscribe.version=0.1` (bump by hand for 0.2, 1.0…).
-- Gradle property `-PbuildNumber=N` (CI passes `github.run_number`) gives
-  `versionCode = N` and `versionName = 0.1.N`. Without it (local builds): `versionCode = 1`,
-  `versionName = 0.1.0-local`.
-- `run_number` increases on every run of the workflow (PRs too), so release numbers have gaps
-  (`v0.1.7`, `v0.1.12`, …) but always increase → each release installs as an update over the previous.
+- Gradle properties `-PbuildNumber=N` and `-PversionSuffix=…` give `versionCode = N` and
+  `versionName = 0.1.N<suffix>`. Without them (local builds): `versionCode = 1`, `versionName = 0.1.0-local`.
+- CI computes N as **the highest release tag's number + 1** (`git ls-remote --tags`), so releases are consecutive
+  (`v0.1.13`, `v0.1.14`, …). Builds that aren't releases (dev, PRs) get the same N — the release they lead up to —
+  with the suffix `-dev.<run>`, e.g. `0.1.14-dev.15`; they never number past the next release.
+- Main runs never overlap (one concurrency group per branch, not cancelled), so two releases can't take the same N.
 - Tag = `v<versionName>`, e.g. `v0.1.12`, pointing at the commit that was built.
 
 ## 5. Will it work on the FREE plan?
