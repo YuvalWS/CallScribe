@@ -115,7 +115,11 @@ private fun SetupGate(graph: app.callscribe.AppGraph, content: @Composable () ->
     if (status == null) return
     if (!s.onboardingDone || !audio) {
         OnboardingScreen(
-            graph, start = if (s.onboardingDone) SetupStep.PERMISSIONS else SetupStep.WELCOME,
+            graph,
+            start = when {
+                s.onboardingDone || !audio -> if (s.onboardingDone || OnboardingProgress.saved(ctx) != null) SetupStep.PERMISSIONS else SetupStep.WELCOME
+                else -> OnboardingProgress.saved(ctx) ?: SetupStep.WELCOME
+            },
             onExit = null, onFinish = {},
         )
     } else content()

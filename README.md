@@ -46,14 +46,18 @@ you configure it.
 
 ## Setup
 
-### 1. Transcription endpoint (RunPod, ~5 minutes)
-1. In RunPod → Serverless → **New Endpoint**, deploy the hub template
-   **ivrit-ai/runpod-serverless** (or image `yairlifshitz/whisper-runpod-serverless`).
-2. Settings: **Min workers 0** (you pay nothing while idle), max workers 1–2, idle timeout ~5 s,
-   container disk ≥ 20 GB, any 16–24 GB GPU.
-3. Copy the **Endpoint ID** and create an **API key** (Settings → API Keys).
-4. In CallScribe → Settings → Providers, paste both and tap **Test connection** (free).
-5. Set the *GPU price per second* to the price of the GPU you chose (used only for cost estimates).
+### 1. Transcription endpoint (RunPod, ~2 minutes)
+1. In RunPod → Settings → **API Keys**, create a key with access "All" (or Read/Write to serverless). RunPod shows it once.
+2. In CallScribe (setup, or Settings → Providers) paste the key, tap **Save key**, then **Set up automatically**.
+   CallScribe reuses your ivrit.ai endpoint if you have one, otherwise creates `callscribe-ivrit` with ivrit.ai's
+   settings: **0 idle workers** (you pay nothing while idle), up to 2 workers, 16–48 GB GPUs.
+3. Optional: set the *GPU price per second* to your GPU's price (used only for cost estimates).
+
+Prefer to do it by hand? Deploy the hub template **ivrit-ai/runpod-serverless** (image
+`yairlifshitz/whisper-runpod-serverless`, min workers 0, disk ≥ 20 GB) and paste its **Endpoint ID** under the button.
+
+Spending limits: each RunPod job is capped at 15 minutes of GPU time and dropped if not done within 2 hours; a call is
+uploaded (paid) at most twice per request, however many retries; a bulk run stops by itself at 2× its estimate.
 
 Measured on a real endpoint: a 14-minute call took 14 s of GPU time ≈ **$0.003**; cold starts add
 ~10–20 s of waiting.
@@ -104,6 +108,13 @@ phone and can download recordings that aren't on it.
 
 ### 4. Background reliability (Samsung)
 Settings → Battery → Background usage limits → **Never sleeping apps** → add CallScribe.
+Skipped during setup? Settings shows it under **Recommended** until it's done.
+
+### Troubleshooting logs
+CallScribe keeps a short log on the phone (no names, numbers, transcripts or keys): errors, warnings and key events
+always; step-by-step detail only when **Settings → Troubleshooting → Detailed logs** is on. **Share log** sends it.
+Over USB: `adb logcat -s CallScribe/*:V` shows everything the app logs (tags `CallScribe/<area>`); turn detailed logs
+on without the app with `adb shell setprop log.tag.CallScribe DEBUG` (`INFO` to go back; resets on reboot).
 
 ## Building
 Needs JDK 17+ and the Android SDK (platform 37). No Android Studio required.

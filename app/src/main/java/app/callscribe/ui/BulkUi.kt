@@ -93,7 +93,7 @@ fun BulkConfirmDialog(graph: AppGraph, rows: List<RecordingEntity>, onDismiss: (
                 }
                 if (plan.isEmpty) Text("Nothing to do: these calls are already processed, in progress, or their audio was deleted.")
                 else EstimateLines(plan, est)
-                Text("Runs in the background. You can cancel from the notification or the call list.", style = MaterialTheme.typography.bodySmall)
+                Text("Runs in the background. Cancel (in the notification or on the call list) stops it at once; calls already done keep their results.", style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {
@@ -129,6 +129,7 @@ fun BulkBanner(graph: AppGraph, rows: List<RecordingEntity>) {
                 Text(
                     when {
                         active -> "Processing ${p.done} of ${p.total} calls"
+                        r.stoppedReason != null && p.running -> "${r.stoppedReason} — stopping…"
                         r.stoppedReason != null -> r.stoppedReason
                         else -> "Processed ${p.done - p.failed} of ${p.total} calls"
                     },

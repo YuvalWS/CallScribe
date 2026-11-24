@@ -86,6 +86,7 @@ fun SettingsScreen(
     val ctx = LocalContext.current
     Page("Settings", onBack) {
         val st = s ?: return@Page
+        rememberSetupStatus(graph)?.recommendations()?.takeIf { it.isNotEmpty() }?.let { Recommendations(it) }
         NavRow("Transcription & AI providers", "Your RunPod endpoint and your AI provider (Gemini, OpenRouter, Claude)", onProviders)
         NavRow("Processing & retention policies", "Per caller type or contact: transcribe, summarize, how long to keep", onRules)
         NavRow("Retention review", "Recordings past their retention period", onRetention)
@@ -136,6 +137,60 @@ fun SettingsScreen(
         OutlinedButton(onClick = {
             ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
         }) { Text("Open battery settings") }
+        HorizontalDivider()
+
+        Troubleshooting()
+    }
+}
+
+/** Skipped setup items that still matter, each with a button that fixes it. */
+@Composable
+private fun Recommendations(items: List<Recommendation>) {
+    val ctx = LocalContext.current
+    androidx.compose.material3.Card(
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Recommended", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            items.forEach { r ->
+                Text(r.title, style = MaterialTheme.typography.titleSmall)
+                Text(r.detail, style = MaterialTheme.typography.bodySmall)
+                OutlinedButton(onClick = {
+                    val intent = when (r) {
+                        Recommendation.BATTERY -> Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", ctx.packageName, null))
+                        Recommendation.NOTIFICATIONS -> Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, ctx.packageName)
+                    }
+                    runCatching { ctx.startActivity(intent) }
+                }) { Text(if (r == Recommendation.BATTERY) "Open app info" else "Open notification settings") }
+            }
+        }
+    }
+}
+
+/** Logging controls: detailed logs on/off at runtime, and sharing the log file. */
+@Composable
+private fun Troubleshooting() {
+    val ctx = LocalContext.current
+    var detailed by remember { mutableStateOf(app.callscribe.Logx.detailed) }
+    Section("Troubleshooting")
+    Text(
+        "CallScribe keeps a short log on the phone (no names, numbers, transcripts or keys) that you can share when " +
+            "something goes wrong. Errors and important events are always logged; detailed logs add every step.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    SwitchRow("Detailed logs", detailed) { v -> app.callscribe.Logx.setDetailed(v); detailed = app.callscribe.Logx.detailed }
+    Text(
+        "Over USB you can also switch them on with: adb shell setprop log.tag.CallScribe DEBUG",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            val text = app.callscribe.Logx.text().takeLast(200_000).ifEmpty { "(empty)" }
+            val send = Intent(Intent.ACTION_SEND).setType("text/plain")
+                .putExtra(Intent.EXTRA_SUBJECT, "CallScribe log").putExtra(Intent.EXTRA_TEXT, text)
+            runCatching { ctx.startActivity(Intent.createChooser(send, "Share log")) }
+        }) { Text("Share log") }
+        OutlinedButton(onClick = { app.callscribe.Logx.clear() }) { Text("Clear log") }
     }
 }
 

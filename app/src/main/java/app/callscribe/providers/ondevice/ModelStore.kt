@@ -27,7 +27,7 @@ sealed interface ModelState {
  * Downloads on-device models on demand into app-specific storage (`noBackupFilesDir/models/<id>`: private, not
  * backed up, removed with the app). Never bundled in the APK.
  */
-class ModelStore(val context: Context, private val http: OkHttpClient = OkHttpClient()) {
+class ModelStore(val context: Context, private val http: OkHttpClient = app.callscribe.providers.HttpLog.builder().build()) {
     private val root = File(context.noBackupFilesDir, "models")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val states = mutableMapOf<String, MutableStateFlow<ModelState>>()
@@ -53,12 +53,15 @@ class ModelStore(val context: Context, private val http: OkHttpClient = OkHttpCl
         if (jobs[m.id]?.isActive == true) return
         jobs[m.id] = scope.launch {
             try {
+                app.callscribe.Logx.i("ModelStore", "downloading ${m.id} (${m.totalBytes / 1_000_000} MB)")
                 download(m)
                 set(m, ModelState.Installed)
+                app.callscribe.Logx.i("ModelStore", "${m.id} installed")
             } catch (e: kotlinx.coroutines.CancellationException) {
                 set(m, if (isInstalled(m)) ModelState.Installed else ModelState.NotInstalled)
                 throw e
             } catch (e: Exception) {
+                app.callscribe.Logx.w("ModelStore", "download of ${m.id} failed", e)
                 set(m, ModelState.Failed(e.message ?: e.javaClass.simpleName))
             }
         }

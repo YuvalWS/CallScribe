@@ -54,6 +54,7 @@ class CallScribeApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        Logx.init(this)
         graph = AppGraph(this)
         graph.notifier.createChannel()
         // Temp files from a compression that was interrupted (process killed).

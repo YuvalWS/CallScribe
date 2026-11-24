@@ -72,11 +72,22 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.callscribe.AppGraph
 import app.callscribe.data.AppSettings
+import app.callscribe.data.RecordingEntity
+import app.callscribe.data.Status
 import app.callscribe.detect.WorkScheduler
+import app.callscribe.pipeline.BulkProgress
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 private fun granted(ctx: Context, perm: String) = ctx.checkSelfPermission(perm) == PackageManager.PERMISSION_GRANTED
+
+/** The step first-run setup was last on, kept across the app being closed or killed. */
+object OnboardingProgress {
+    private fun prefs(ctx: Context) = ctx.getSharedPreferences("onboarding", Context.MODE_PRIVATE)
+    fun save(ctx: Context, step: SetupStep) = prefs(ctx).edit().putString("step", step.name).apply()
+    fun clear(ctx: Context) = prefs(ctx).edit().clear().apply()
+    fun saved(ctx: Context): SetupStep? = prefs(ctx).getString("step", null)?.let { n -> SetupStep.entries.firstOrNull { it.name == n } }
+}
 
 /**
  * Live [SetupStatus], refreshed when settings or recordings change, when the app resumes (the user may come
@@ -124,16 +135,29 @@ private fun Context.appDetails() = Intent(Settings.ACTION_APPLICATION_DETAILS_SE
 @Composable
 fun OnboardingScreen(graph: AppGraph, start: SetupStep, onExit: (() -> Unit)?, onFinish: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     var step by rememberSaveable { mutableStateOf(start) }
     val settings by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     val status = rememberSetupStatus(graph, refreshKey = step)
     val steps = SetupStep.entries
     val idx = step.ordinal
+    // Remember the step, so reopening the app after it was closed mid-setup continues here instead of at Welcome.
+    androidx.compose.runtime.LaunchedEffect(step) { OnboardingProgress.save(ctx, step) }
+
+    // What a step does when the user taps Next (e.g. the existing-calls step starts the chosen run). Set by the step.
+    val onNext = remember { androidx.compose.runtime.mutableStateMapOf<SetupStep, suspend () -> Unit>() }
 
     fun next() {
-        if (idx < steps.lastIndex) { step = steps[idx + 1]; return }
+        val action = onNext.remove(step) // runs once
+        if (idx < steps.lastIndex) {
+            val from = step
+            scope.launch { action?.invoke(); if (step == from) step = steps[idx + 1] }
+            return
+        }
         scope.launch {
+            action?.invoke()
             graph.settings.update { it.copy(onboardingDone = true, setupBannerDismissed = false) }
+            OnboardingProgress.clear(ctx)
             onFinish()
         }
     }
@@ -189,12 +213,17 @@ fun OnboardingScreen(graph: AppGraph, start: SetupStep, onExit: (() -> Unit)?, o
             val ui = step.ui()
             Icon(ui.icon, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
             Text(step.heading, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
-            ui.body(StepContext(graph, st, s))
+            val cur = step
+            ui.body(StepContext(graph, st, s) { a -> if (a == null) onNext.remove(cur) else onNext[cur] = a })
         }
     }
 }
 
-private class StepContext(val graph: AppGraph, val status: SetupStatus, val settings: AppSettings)
+private class StepContext(
+    val graph: AppGraph, val status: SetupStatus, val settings: AppSettings,
+    /** Registers what Next should do on this step (null = just move on). */
+    val setOnNext: ((suspend () -> Unit)?) -> Unit,
+)
 private class StepUi(val icon: ImageVector, val body: @Composable (StepContext) -> Unit)
 
 /** Icon + body of each step. Exhaustive on purpose: adding a [SetupStep] fails to compile until it has a UI here. */
@@ -204,7 +233,7 @@ private fun SetupStep.ui(): StepUi = when (this) {
     SetupStep.RECORDING -> StepUi(Icons.Default.Call) { RecordingStep(it.status) }
     SetupStep.BACKGROUND -> StepUi(Icons.Default.BatteryFull) { BackgroundStep(it.status) }
     SetupStep.TRANSCRIPTION -> StepUi(Icons.Default.Subtitles) { c ->
-        Body("Transcripts are made by an ivrit.ai Hebrew model running on your own RunPod endpoint. You pay RunPod directly — about $0.003 for a 14-minute call. Setup takes ~5 minutes; see the README for step-by-step instructions.")
+        Body("Transcripts are made by an ivrit.ai Hebrew model running on your own RunPod endpoint. You pay RunPod directly — about $0.003 for a 14-minute call. Paste a RunPod API key and tap Set up automatically — CallScribe finds or creates the endpoint for you.")
         Body("You can skip this and set it up later in Settings → Providers. Until then CallScribe works as a recordings browser.")
         StatusLine(c.status.transcriberConfigured, "Transcription is set up", "Not set up yet")
         TranscriptionProviderFields(c.graph, c.settings)
@@ -215,7 +244,7 @@ private fun SetupStep.ui(): StepUi = when (this) {
         AnalyzerProviderFields(c.graph, c.settings)
     }
     SetupStep.POLICY -> StepUi(Icons.Default.Tune) { PolicyStep(it.graph, it.settings.autoEnabled) }
-    SetupStep.EXISTING -> StepUi(Icons.Default.History) { ExistingStep(it.graph, it.status, it.settings) }
+    SetupStep.EXISTING -> StepUi(Icons.Default.History) { ExistingStep(it.graph, it.status, it.settings, it.setOnNext) }
     SetupStep.BACKUP -> StepUi(Icons.Default.CloudUpload) { BackupStep(it.graph) }
     SetupStep.DONE -> StepUi(Icons.Default.CheckCircle) { DoneStep(it.status) }
 }
@@ -350,22 +379,34 @@ private fun PolicyStep(graph: AppGraph, autoEnabled: Boolean) {
 private enum class ExistingChoice(val title: String) { NONE("None for now"), RECENT("The last 30 days"), ALL("All of them") }
 
 @Composable
-private fun ExistingStep(graph: AppGraph, st: SetupStatus, s: AppSettings) {
-    val scope = rememberCoroutineScope()
+private fun ExistingStep(graph: AppGraph, st: SetupStatus, s: AppSettings, setOnNext: ((suspend () -> Unit)?) -> Unit) {
+    val ctx = LocalContext.current
     val rows by graph.db.recordings().observeAll().collectAsStateWithLifecycle(initialValue = emptyList())
     val run by graph.bulk.run.collectAsStateWithLifecycle()
     var choice by rememberSaveable { mutableStateOf(ExistingChoice.NONE) }
-    var started by rememberSaveable { mutableStateOf(false) }
     Body("New calls follow the choice you just made. Calls already on the phone (${st.recordingCount}) are only processed if you say so.")
     if (!st.transcriberConfigured) {
         StatusLine(false, "", "Set up transcription first")
         Text("You can do it any time later: on the call list, tap the select button, pick calls (or All) and tap Process.", style = MaterialTheme.typography.bodySmall)
         return
     }
-    if (started && run != null) {
-        StatusLine(true, "Started — progress is shown on the call list and in a notification", "")
+
+    TryLatestCall(graph, rows)
+
+    // A run already going (started here, or before the app was closed): show it instead of the choices.
+    val r = run
+    val progress = remember(r, rows) { r?.let { BulkProgress.of(it, rows) } }
+    if (r != null && progress != null && progress.running && r.stoppedReason == null) {
+        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Processing ${progress.done} of ${progress.total} calls", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                LinearProgressIndicator(progress = { progress.done.toFloat() / progress.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
+                Text("This runs in the background. Tap Next to finish setup, or close the app — progress stays in a notification and on the call list, where you can also cancel it.")
+            }
+        }
         return
     }
+
     val monthAgo = System.currentTimeMillis() / 1000 - 30L * 86_400
     ExistingChoice.entries.forEach { c ->
         val on = c == choice
@@ -400,9 +441,67 @@ private fun ExistingStep(graph: AppGraph, st: SetupStatus, s: AppSettings) {
             ExistingChoice.ALL -> estimateFor(graph, s, rows, rows, summarize = true)
         }
     }
-    if (pick != null && !pick.first.isEmpty) {
-        Button(onClick = { scope.launch { graph.bulk.start(pick.first, pick.second.capUsd); started = true } }) {
-            Text("Process ${pick.second.calls} calls" + if (pick.second.isFree) "" else " · ~${Fmt.usd(pick.second.usd)}")
+    // Next starts the chosen run; the app says it's working in the background and setup carries on.
+    val start = pick?.takeIf { !it.first.isEmpty }
+    androidx.compose.runtime.DisposableEffect(start) {
+        setOnNext(start?.let { (plan, est) ->
+            suspend {
+                graph.bulk.start(plan, est.capUsd)
+                Toast.makeText(
+                    ctx, "Processing ${est.calls} calls in the background — progress is in the notification and on the call list.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        })
+        onDispose { setOnNext(null) }
+    }
+    if (start != null) Text(
+        "Tap Next to start. It runs in the background — you can finish setup or close the app.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+}
+
+/**
+ * "See it work first": processes the newest call on its own and shows the result right here, so the user knows
+ * what they get (and that the provider works) before starting a big run.
+ */
+@Composable
+private fun TryLatestCall(graph: AppGraph, rows: List<RecordingEntity>) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var triedId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val latest = rows.filter { !it.fileMissing }.maxByOrNull { it.callTimeSec } ?: return
+    val shown = triedId?.let { id -> rows.firstOrNull { it.id == id } }
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Not sure? Try it on your latest call", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text("${Fmt.title(latest)} · ${Fmt.time(latest.callTimeSec)}", style = MaterialTheme.typography.bodySmall)
+            when {
+                shown == null && latest.transcriptText != null -> OutlinedButton(onClick = { triedId = latest.id }) { Text("Show its result") }
+                shown == null -> OutlinedButton(onClick = {
+                    triedId = latest.id
+                    scope.launch { processNow(ctx, graph, latest) }
+                }) { Text("Process this call") }
+                shown.status in setOf(Status.QUEUED, Status.TRANSCRIBING, Status.ANALYZING) -> {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(
+                        when (shown.status) {
+                            Status.ANALYZING -> "Writing the summary…"
+                            Status.TRANSCRIBING -> "Transcribing… the first call can take a minute or two while the server starts."
+                            else -> "Starting…"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                shown.status == Status.FAILED -> Text(
+                    "It didn't work: ${shown.error ?: "unknown error"}. Check the provider settings on the previous steps.",
+                    color = MaterialTheme.colorScheme.error,
+                )
+                else -> {
+                    shown.summary?.let { Text(it, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold) }
+                    shown.transcriptText?.let { Text(it.take(400) + if (it.length > 400) "…" else "", style = MaterialTheme.typography.bodySmall) }
+                }
+            }
         }
     }
 }

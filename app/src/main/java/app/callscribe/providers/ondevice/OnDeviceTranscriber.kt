@@ -81,6 +81,7 @@ class OnDeviceTranscriber(
         return try {
             OnlineRecognizer(config = cfg)
         } catch (e: Throwable) { // UnsatisfiedLinkError on an unsupported CPU, or a broken model file
+            app.callscribe.Logx.e("OnDevice", "model failed to load", e)
             throw ProviderError("Could not load the on-device model: ${e.message ?: e.javaClass.simpleName}", false)
         }
     }

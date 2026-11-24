@@ -1,12 +1,12 @@
 package app.callscribe.backup
 
+import app.callscribe.Logx
 import android.content.ContentValues
 import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.provider.MediaStore
-import android.util.Log
 import androidx.room.withTransaction
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
@@ -158,7 +158,7 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
                 settings.update { it.copy(lastResult = msg, needsSignIn = false) }
             } else {
                 val rep = engine().backup(device(), source, s.includeAudio, start / 1000) { System.currentTimeMillis() - start > BUDGET_MS }
-                Log.i(TAG, rep.line())
+                Logx.i(TAG, rep.line())
                 settings.update {
                     it.copy(
                         lastResult = rep.line(), needsSignIn = false,
@@ -176,7 +176,7 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
             settings.update { it.copy(lastResult = "Network error, will retry: ${e.message}") }
             ListenableWorker.Result.retry()
         } catch (e: Exception) {
-            Log.w(TAG, "backup failed", e)
+            Logx.w(TAG, "backup failed", e)
             settings.update { it.copy(lastResult = "Failed: ${e.message ?: e.javaClass.simpleName}") }
             ListenableWorker.Result.failure()
         }
@@ -217,7 +217,7 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
 
     private suspend fun rescan() = runCatching {
         graph.syncFiles(graph.scanner.list(graph.settings.get().pathPrefixes))
-    }.onFailure { Log.w(TAG, "rescan after restore failed", it) }
+    }.onFailure { Logx.w(TAG, "rescan after restore failed", it) }
 
     private suspend fun doRestore(from: BackupInfo, downloadAudio: Boolean): String {
         val e = engine()
@@ -227,7 +227,7 @@ class DriveBackup(private val context: Context, private val graph: AppGraph) {
         var missing = e.missingAudio(graph.db.recordings().all(), from)
         if (downloadAudio) {
             val folder = graph.settings.get().pathPrefixes.firstOrNull() ?: "Recordings/Call"
-            for (a in missing) if (runCatching { saveAudio(e, a, folder) }.onFailure { Log.w(TAG, "download ${a.name}", it) }.isSuccess) downloaded++
+            for (a in missing) if (runCatching { saveAudio(e, a, folder) }.onFailure { Logx.w(TAG, "download ${a.name}", it) }.isSuccess) downloaded++
             if (downloaded > 0) rescan()
             missing = e.missingAudio(graph.db.recordings().all(), from)
         }

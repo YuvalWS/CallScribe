@@ -28,6 +28,7 @@ class AudioCompressor(private val context: Context) {
         try {
             val samples = BufferedOutputStream(pcm.outputStream(), 1 shl 16).use { decodeToMono(uri, outRate, it) }
             encodeAac(pcm, samples, outRate, bitRate, out)
+            app.callscribe.Logx.d("Compressor", "compressed to ${out.length() / 1024} KB (${samples / outRate} s)")
             return out.readBytes()
         } finally {
             pcm.delete(); out.delete()

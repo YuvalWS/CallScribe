@@ -20,6 +20,10 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -28,6 +32,7 @@ import app.callscribe.AppGraph
 import app.callscribe.data.AppSettings
 import app.callscribe.data.SecretStore
 import app.callscribe.providers.ProviderError
+import app.callscribe.providers.ivrit.RunPodSetup
 import app.callscribe.providers.ondevice.OnDeviceTranscriber
 import kotlinx.coroutines.launch
 
@@ -100,16 +105,48 @@ internal fun AnalyzerProviderFields(graph: AppGraph, st: AppSettings) {
 @Composable
 private fun RunPodSection(graph: AppGraph, st: AppSettings) {
     val scope = rememberCoroutineScope()
-    Text(
-        "Endpoint ID: the short ID of your RunPod serverless endpoint (Serverless → your endpoint; also in its URL " +
-            "api.runpod.ai/v2/<ID>/run). Deploy the ivrit-ai/runpod-serverless template with min workers 0.",
-        style = MaterialTheme.typography.bodySmall,
-    )
+    val ctx = androidx.compose.ui.platform.LocalContext.current
     var endpoint by remember { mutableStateOf(st.runpodEndpointId) }
     var model by remember { mutableStateOf(st.runpodModel) }
     var price by remember { mutableStateOf(st.runpodPricePerSec.toBigDecimal().toPlainString()) }
-    Field("Endpoint ID", endpoint) { endpoint = it.trim() }
+    var setup by remember { mutableStateOf<TestResult?>(null) }
+    Text(
+        "1. Create a RunPod API key (RunPod → Settings → API Keys → Create API Key, access \"All\" or Read/Write) " +
+            "and paste it below. RunPod shows it only once.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    OutlinedButton(onClick = {
+        runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(RunPodSetup.KEY_PAGE))) }
+    }) { Text("Open RunPod API keys") }
     KeyField(graph, SecretStore.Key.RUNPOD_API_KEY, "RunPod API key")
+    Text(
+        "2. Tap Set up automatically: CallScribe uses your existing ivrit.ai endpoint, or creates one with 0 idle " +
+            "workers — it costs nothing until a call is transcribed.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Button(enabled = setup != TestResult.Testing, onClick = {
+        scope.launch {
+            val key = graph.secrets.get(SecretStore.Key.RUNPOD_API_KEY)
+            if (key.isNullOrBlank()) { setup = TestResult.Error("Paste your RunPod API key and tap Save key first."); return@launch }
+            setup = TestResult.Testing
+            setup = try {
+                val out = RunPodSetup(key).findOrCreate()
+                endpoint = out.endpoint.id
+                graph.settings.update { it.copy(runpodEndpointId = out.endpoint.id) }
+                val health = runCatching { graph.providers.transcriber(graph.settings.get().copy(transcriberId = "ivrit-runpod"))!!.test() }
+                    .getOrElse { "Endpoint saved; the connection check failed: ${it.message}" }
+                TestResult.Ok(
+                    (if (out.created) "Created endpoint \"${out.endpoint.name}\" in your RunPod account." else "Found your ivrit.ai endpoint \"${out.endpoint.name}\".") +
+                        " Saved. $health",
+                )
+            } catch (e: Exception) {
+                TestResult.Error(e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }) { Text("Set up automatically") }
+    setup?.let { ResultCard(it, okTitle = "✓ RunPod is set up", errorTitle = "✗ Automatic setup failed", busy = "Setting up your endpoint…") }
+    Text("Or fill in your own endpoint:", style = MaterialTheme.typography.bodySmall)
+    Field("Endpoint ID", endpoint) { endpoint = it.trim() }
     Field("Model", model) { model = it.trim() }
     Field("GPU price, USD per second (for cost estimates)", price, KeyboardType.Decimal) { price = it }
     SwitchRow("Separate speakers (diarization, slower)", st.diarize) { v -> scope.launch { graph.settings.update { it.copy(diarize = v) } } }
@@ -213,19 +250,81 @@ private fun KeyField(graph: AppGraph, key: SecretStore.Key, label: String) {
     }
 }
 
+private sealed interface TestResult {
+    data object Saved : TestResult
+    data object Testing : TestResult
+    data class Ok(val message: String) : TestResult
+    data class Error(val message: String) : TestResult
+}
+
+/** A plain-language hint for common connection errors. Pure. */
+internal fun connectionHint(message: String): String? {
+    val m = message.lowercase()
+    return when {
+        "401" in m || "403" in m || "unauthor" in m || "api key" in m || "permission" in m -> "The API key looks wrong or has no access. Paste it again and tap Save key."
+        "404" in m || "not found" in m -> "Not found: check the endpoint ID or the model name."
+        "unable to resolve host" in m || "failed to connect" in m || "timeout" in m || "timed out" in m || "network" in m ->
+            "No connection to the server. Check the phone's internet and try again."
+        "429" in m || "quota" in m || "rate" in m -> "The provider is limiting requests right now. Wait a minute and try again."
+        else -> null
+    }
+}
+
 @Composable
 private fun SaveAndTest(onSave: suspend () -> Unit, onTest: suspend () -> String) {
     val scope = rememberCoroutineScope()
-    var result by remember { mutableStateOf<String?>(null) }
+    var result by remember { mutableStateOf<TestResult?>(null) }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { scope.launch { onSave(); result = "Saved" } }) { Text("Save") }
-        OutlinedButton(onClick = {
+        Button(onClick = { scope.launch { onSave(); result = TestResult.Saved } }) { Text("Save") }
+        OutlinedButton(enabled = result != TestResult.Testing, onClick = {
             scope.launch {
                 onSave()
-                result = "Testing…"
-                result = try { "✓ " + onTest() } catch (e: ProviderError) { "✗ ${e.message}" } catch (e: Exception) { "✗ ${e.message ?: e.javaClass.simpleName}" }
+                result = TestResult.Testing
+                result = try { TestResult.Ok(onTest()) } catch (e: ProviderError) { TestResult.Error(e.message ?: "error") } catch (e: Exception) {
+                    TestResult.Error(e.message ?: e.javaClass.simpleName)
+                }
             }
         }) { Text("Test connection") }
     }
-    result?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+    result?.let { ResultCard(it) }
+}
+
+/** A large green / red result card, scrolled into view so it isn't missed below the fold. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun ResultCard(
+    r: TestResult, okTitle: String = "✓ Connection works", errorTitle: String = "✗ Connection failed", busy: String = "Testing the connection…",
+) {
+    val bring = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    androidx.compose.runtime.LaunchedEffect(r) { runCatching { bring.bringIntoView() } }
+    val cs = MaterialTheme.colorScheme
+    val (bg, fg) = when (r) {
+        is TestResult.Ok -> androidx.compose.ui.graphics.Color(0xFFD7F5DD) to androidx.compose.ui.graphics.Color(0xFF0B5A1E)
+        is TestResult.Error -> cs.errorContainer to cs.onErrorContainer
+        else -> cs.surfaceVariant to cs.onSurfaceVariant
+    }
+    androidx.compose.material3.Card(
+        Modifier.fillMaxWidth().bringIntoViewRequester(bring),
+        colors = androidx.compose.material3.CardDefaults.cardColors(containerColor = bg, contentColor = fg),
+    ) {
+        androidx.compose.foundation.layout.Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            when (r) {
+                TestResult.Saved -> Text("Saved", style = MaterialTheme.typography.titleMedium)
+                TestResult.Testing -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+                    Text(busy, style = MaterialTheme.typography.titleMedium)
+                }
+                is TestResult.Ok -> {
+                    Text(okTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(r.message)
+                }
+                is TestResult.Error -> {
+                    Text(errorTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    connectionHint(r.message)?.let { Text(it, fontWeight = FontWeight.SemiBold) }
+                    Text(r.message, style = MaterialTheme.typography.bodySmall)
+                    Text("Your settings are saved. You can fix this later in Settings → Providers.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        }
+    }
 }

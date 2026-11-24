@@ -1,5 +1,6 @@
 package app.callscribe.detect
 
+import app.callscribe.Logx
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -8,7 +9,6 @@ import android.provider.ContactsContract.CommonDataKinds.Phone
 import android.provider.ContactsContract.Contacts
 import android.provider.ContactsContract.Data
 import android.provider.ContactsContract.Groups
-import android.util.Log
 import app.callscribe.rules.ContactGroupIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,12 +34,12 @@ class ContactGroupsReader(private val context: Context) {
     /** Distinct group titles, for the "add group policy" picker. */
     suspend fun titles(): List<String> = withContext(Dispatchers.IO) {
         if (!hasPermission()) return@withContext emptyList()
-        runCatching { groups().values.distinct().sortedBy { it.lowercase() } }.getOrElse { Log.w(TAG, "groups", it); emptyList() }
+        runCatching { groups().values.distinct().sortedBy { it.lowercase() } }.getOrElse { Logx.w(TAG, "groups", it); emptyList() }
     }
 
     suspend fun index(): ContactGroupIndex = withContext(Dispatchers.IO) {
         if (!hasPermission()) return@withContext ContactGroupIndex.EMPTY
-        runCatching { build() }.getOrElse { Log.w(TAG, "index", it); ContactGroupIndex.EMPTY }
+        runCatching { build() }.getOrElse { Logx.w(TAG, "index", it); ContactGroupIndex.EMPTY }
     }
 
     private fun build(): ContactGroupIndex {

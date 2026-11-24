@@ -1,8 +1,8 @@
 package app.callscribe.pipeline
 
+import app.callscribe.Logx
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import app.callscribe.CallScribeApp
@@ -47,7 +47,10 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         const val STEP_TRANSCRIBE = "transcribe"
         const val STEP_ANALYZE = "analyze"
         private const val TAG = "ProcessWorker"
+        /** Retries for "still waiting" / temporary provider errors (each attempt polls for up to 4 min). */
         private const val MAX_ATTEMPTS = 6
+        /** Paid uploads per request at most, however many retries happen: retries normally resume the same job. */
+        const val MAX_SUBMITS = 2
         private val segJson = Json { ignoreUnknownKeys = true }
     }
 
@@ -55,13 +58,20 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
     private val dao get() = graph.db.recordings()
 
     override suspend fun doWork(): Result {
+        val res = work()
+        if (res !is Result.Retry) submitCounts().edit().remove(this.id.toString()).apply()
+        return res
+    }
+
+    private suspend fun work(): Result {
         val id = inputData.getLong(KEY_ID, -1)
         val steps = inputData.getString(KEY_STEPS).orEmpty().split(',').filter { it.isNotBlank() }.toSet()
         val force = inputData.getBoolean(KEY_FORCE, false)
         val bulk = inputData.getBoolean(KEY_BULK, false)
+        Logx.i(TAG, "call $id: start steps=$steps bulk=$bulk attempt=$runAttemptCount")
         if (!bulk) return run(id, steps, force, bulk = false)
         val row = dao.get(id) ?: return Result.success()
-        if (!graph.bulk.mayProceed(row)) return Result.success()
+        if (!graph.bulk.mayProceed(row)) { Logx.i(TAG, "call $id: skipped (bulk run stopped)"); return Result.success() }
         val res = try { run(id, steps, force, bulk = true) } finally { graph.bulk.updateNotification() }
         // A failed call is recorded on the call; the next one in the lane still runs.
         return if (res is Result.Failure) Result.success() else res
@@ -81,7 +91,10 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
 
             if (STEP_TRANSCRIBE in steps && (force || row.transcriptText == null || row.providerJobId != null)) {
                 when (val r = transcribe(row, force)) {
-                    is Outcome.Retry -> return if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else fail(id, r.reason, bulk)
+                    is Outcome.Retry -> {
+                        Logx.i(TAG, "call $id: retry later (attempt $runAttemptCount): ${r.reason}")
+                        return if (runAttemptCount < MAX_ATTEMPTS) Result.retry() else fail(id, r.reason, bulk)
+                    }
                     is Outcome.Fail -> return fail(id, r.reason, bulk)
                     Outcome.Ok -> {}
                 }
@@ -93,21 +106,23 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                 row = dao.get(id)!!
             }
             if (!bulk) graph.notifier.notifyResult(row)
+            Logx.i(TAG, "call $id: done (${row.status})")
             return Result.success()
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e // stopped by WorkManager; it reschedules (or the time-limit handler already recorded why)
         } catch (e: ProviderError) {
-            Log.w(TAG, "provider error", e)
+            Logx.w(TAG, "provider error", e)
             return if (e.retryable && runAttemptCount < MAX_ATTEMPTS) {
                 dao.setStatus(id, row.status, e.message); Result.retry()
             } else fail(id, e.message ?: "error", bulk)
         } catch (e: Exception) {
-            Log.e(TAG, "processing failed", e)
+            Logx.e(TAG, "processing failed", e)
             return if (runAttemptCount < 2) Result.retry() else fail(id, e.message ?: e.javaClass.simpleName, bulk)
         }
     }
 
     private suspend fun fail(id: Long, reason: String, bulk: Boolean = false): Result {
+        Logx.w(TAG, "call $id: failed: $reason")
         dao.setStatus(id, Status.FAILED, reason)
         if (!bulk) dao.get(id)?.let { graph.notifier.notifyResult(it) }
         return Result.failure()
@@ -130,18 +145,28 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         // Resume a job submitted by an earlier attempt instead of paying twice.
         var jobId = row.providerJobId.takeIf { row.transcriberId == tr.id && !(force && runAttemptCount == 0) }
         if (jobId == null) {
+            val submits = submitCounts().getInt(this.id.toString(), 0)
+            if (submits >= MAX_SUBMITS) {
+                return Outcome.Fail("Gave up after $submits attempts on the transcription server, to avoid paying again. Tap Transcribe to try once more.")
+            }
+            submitCounts().edit().putInt(this.id.toString(), submits + 1).apply()
             dao.setStatus(row.id, Status.TRANSCRIBING)
             val audio = loadAudio(row, tr.maxUploadBytes)
+            Logx.i(TAG, "call ${row.id}: uploading ${audio.bytes.size / 1024} KB (${row.durationMs / 1000} s audio)")
             jobId = tr.submit(audio)
+            Logx.i(TAG, "call ${row.id}: submitted")
             row = dao.get(row.id)!!.copy(providerJobId = jobId, transcriberId = tr.id, status = Status.TRANSCRIBING, error = null)
             dao.update(row)
         }
 
         // Poll up to ~4 minutes inside this attempt; cold starts can take a while.
         val deadline = System.currentTimeMillis() + 4 * 60_000
+        var lastStatus: String? = null
         while (System.currentTimeMillis() < deadline) {
             when (val st = tr.poll(jobId)) {
                 is TranscriptionState.Pending -> {
+                    if (st.status != lastStatus) Logx.i(TAG, "call ${row.id}: provider status ${st.status}")
+                    lastStatus = st.status
                     dao.update(dao.get(row.id)!!.copy(error = "Provider status: ${st.status}"))
                     delay(4_000)
                 }
@@ -150,6 +175,7 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
                     return if (st.retryable) Outcome.Retry(st.message) else Outcome.Fail(st.message)
                 }
                 is TranscriptionState.Done -> {
+                    Logx.i(TAG, "call ${row.id}: transcribed, cost ${st.cost?.usd}")
                     saveTranscript(row.id, tr.id, st)
                     return Outcome.Ok
                 }
@@ -187,7 +213,7 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         try {
             setForeground(note.foregroundInfo(0))
         } catch (e: Exception) {
-            Log.i(TAG, "running on-device transcription without a foreground service: ${e.message}")
+            Logx.i(TAG, "running on-device transcription without a foreground service: ${e.message}")
         }
         val partial = java.util.Collections.synchronizedList(mutableListOf<Segment>())
         val st = try {
@@ -227,6 +253,9 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         return AudioInput(compressed, "audio/mp4", row.displayName)
     }
 
+    /** Paid submissions made by this work request (keyed by its WorkManager id), see [MAX_SUBMITS]. */
+    private fun submitCounts() = applicationContext.getSharedPreferences("submits", Context.MODE_PRIVATE)
+
     private fun timeoutMarks() = applicationContext.getSharedPreferences("ondevice_timeouts", Context.MODE_PRIVATE)
 
     /**
@@ -257,6 +286,7 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         val an = graph.providers.analyzer(settings) ?: return
         if (!an.isConfigured()) return
         dao.setStatus(row.id, Status.ANALYZING)
+        Logx.i(TAG, "call ${row.id}: analyzing with ${an.id}")
         val time = DateTimeFormatter.ofPattern("EEE yyyy-MM-dd HH:mm")
             .format(Instant.ofEpochSecond(row.callTimeSec).atZone(ZoneId.systemDefault()))
         val meta = CallMeta(row.counterparty, row.samsungLabel, row.labelKind.name, row.durationMs / 1000, time)
@@ -296,7 +326,7 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         val req = Request.Builder().url(url).post(body).apply {
             graph.secrets.get(SecretStore.Key.WEBHOOK_TOKEN)?.let { header("Authorization", "Bearer $it") }
         }.build()
-        OkHttpClient().newCall(req).execute().use { resp ->
+        app.callscribe.providers.HttpLog.builder().build().newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) throw ProviderError("Webhook HTTP ${resp.code}", resp.code >= 500)
         }
         dao.update(dao.get(row.id)!!.copy(exportedAt = System.currentTimeMillis()))

@@ -30,7 +30,7 @@ import java.util.concurrent.TimeUnit
  */
 class DriveRestApi(
     private val token: suspend (forceRefresh: Boolean) -> String,
-    private val http: OkHttpClient = OkHttpClient.Builder()
+    private val http: OkHttpClient = app.callscribe.providers.HttpLog.builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(300, TimeUnit.SECONDS)

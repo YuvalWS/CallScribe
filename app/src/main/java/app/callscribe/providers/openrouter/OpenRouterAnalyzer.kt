@@ -100,6 +100,6 @@ class OpenRouterAnalyzer(
     }
 
     companion object {
-        private val client = OkHttpClient.Builder().readTimeout(120, TimeUnit.SECONDS).build()
+        private val client = app.callscribe.providers.HttpLog.builder().readTimeout(120, TimeUnit.SECONDS).build()
     }
 }

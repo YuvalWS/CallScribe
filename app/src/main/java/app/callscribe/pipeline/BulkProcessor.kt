@@ -1,5 +1,6 @@
 package app.callscribe.pipeline
 
+import app.callscribe.Logx
 import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -60,6 +61,9 @@ data class BulkProgress(val total: Int, val done: Int, val failed: Int, val spen
 class BulkProcessor(private val context: Context, private val graph: AppGraph) {
     companion object {
         const val TAG = "bulk"
+        /** Per-request tag carrying the call id (shows up in WorkManager dumps when debugging). */
+        private const val CALL_TAG = "bulk-call-"
+        private val BUSY = setOf(Status.QUEUED, Status.TRANSCRIBING, Status.ANALYZING)
         const val CHANNEL = "bulk"
         private const val NOTE_ID = -4
         private const val PREFS = "bulk_run"
@@ -120,7 +124,8 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
                             .setRequiresCharging(onDevice && s.onDeviceOnlyWhileCharging)
                             .build()
                     )
-                    .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, Duration.ofSeconds(30))
+                    // Linear: a call waiting on a slow server must not hold up the rest of its lane for 16 minutes.
+                    .setBackoffCriteria(BackoffPolicy.LINEAR, Duration.ofSeconds(30))
                     .setInputData(
                         workDataOf(
                             ProcessWorker.KEY_ID to r.id,
@@ -130,6 +135,7 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
                         )
                     )
                     .addTag(TAG)
+                    .addTag(CALL_TAG + r.id)
                     .build()
             }
             wm.beginUniqueWork("bulk-lane-$lane", ExistingWorkPolicy.APPEND_OR_REPLACE, reqs).enqueue()
@@ -137,17 +143,31 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
         updateNotification()
     }
 
-    /** Stops the run: queued calls go back to where they were; a call already being processed finishes. */
+    /**
+     * Stops the run right away so it spends nothing more. Calls already finished keep their transcripts and summaries.
+     * The call being processed is stopped too: its job on the provider is cancelled (RunPod stops billing) and the
+     * call goes back to where it was, as do all calls still waiting.
+     */
     fun cancel(reason: String = "Cancelled") {
         val r = _run.value ?: return
         save(r.copy(stoppedReason = reason))
         WorkManager.getInstance(context).cancelAllWorkByTag(TAG)
         scope.launch {
+            // Give the stopped workers a moment to unwind, so none of them writes its status back after we reset it.
+            kotlinx.coroutines.delay(1_500)
             val dao = graph.db.recordings()
+            val tr = graph.providers.transcriber(graph.settings.get())
+            var stopped = 0
             r.ids.forEach { id ->
                 val row = dao.get(id) ?: return@forEach
-                if (row.status == Status.QUEUED) dao.setStatus(id, restingStatus(row))
+                if (row.status !in BUSY) return@forEach
+                row.providerJobId?.let { job ->
+                    if (tr != null && row.transcriberId == tr.id) tr.cancel(job)
+                    stopped++
+                }
+                dao.update(row.copy(status = restingStatus(row), providerJobId = null, error = null))
             }
+            Logx.i("BulkProcessor", "cancelled ($reason): $stopped provider job(s) stopped")
             updateNotification()
         }
     }

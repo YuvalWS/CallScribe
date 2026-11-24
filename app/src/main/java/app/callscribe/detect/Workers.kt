@@ -1,10 +1,10 @@
 package app.callscribe.detect
 
+import app.callscribe.Logx
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.MediaStore
-import android.util.Log
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -108,18 +108,18 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             }
             val files = graph.scanner.list(settings.pathPrefixes)
             val result = graph.syncFiles(files)
-            Log.i(TAG, "scan: ${files.size} files, ${result.newRows.size} new, ${result.relinked} relinked, ${result.missing} missing")
+            Logx.i(TAG, "scan: ${files.size} files, ${result.newRows.size} new, ${result.relinked} relinked, ${result.missing} missing")
 
             graph.db.policies().ensureGroupDefaults()
             val policies = graph.db.policies().all()
             val groups = if (result.newRows.isEmpty()) ContactGroupIndex.EMPTY else graph.contactGroups.index()
             for (row in result.newRows) {
-                if (row.dateAddedSec < settings.autoProcessFromSec) continue
+                if (row.dateAddedSec < settings.autoProcessFromSec) { Logx.d(TAG, "call ${row.id}: older than automatic start, left alone"); continue }
                 handleNew(row, policies, groups, settings)
             }
             return Result.success()
         } catch (e: SecurityException) {
-            Log.w(TAG, "no media permission yet", e)
+            Logx.w(TAG, "no media permission yet", e)
             return Result.success()
         } finally {
             if (inputData.getBoolean(KEY_FROM_TRIGGER, false)) WorkScheduler.armTrigger(applicationContext)
@@ -135,6 +135,7 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
         val graph = (applicationContext as CallScribeApp).graph
         val policy = PolicyResolver.forProcessing(row, policies, groups)
         val canTranscribe = graph.providers.transcriber(settings)?.isConfigured() == true
+        Logx.d(TAG, "call ${row.id}: new, type ${row.labelKind}, auto=${settings.autoEnabled} transcribe=${policy.transcribe} summarize=${policy.summarize} provider ready=$canTranscribe")
         if (!settings.autoEnabled || !policy.transcribe) {
             graph.db.recordings().setStatus(row.id, Status.SKIPPED_BY_RULE)
             return
@@ -147,6 +148,7 @@ class ScanWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, 
             }
         }
         if (steps.isEmpty()) return
+        Logx.i(TAG, "call ${row.id}: queued automatically, steps $steps")
         graph.db.recordings().setStatus(row.id, Status.QUEUED)
         val onDevice = graph.providers.isOnDevice(settings)
         WorkScheduler.enqueueProcess(

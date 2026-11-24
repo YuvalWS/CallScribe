@@ -40,6 +40,8 @@ interface Transcriber {
     suspend fun test(): String
     suspend fun submit(audio: AudioInput): String
     suspend fun poll(handle: String): TranscriptionState
+    /** Stops a submitted job on the provider's side so it stops costing money. Best effort; default: nothing to do. */
+    suspend fun cancel(handle: String) {}
 }
 
 data class CallMeta(

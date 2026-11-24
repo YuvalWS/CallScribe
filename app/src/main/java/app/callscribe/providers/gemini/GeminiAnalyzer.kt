@@ -108,7 +108,7 @@ class GeminiAnalyzer(
     }
 
     companion object {
-        private val client = OkHttpClient.Builder().readTimeout(120, TimeUnit.SECONDS).build()
+        private val client = app.callscribe.providers.HttpLog.builder().readTimeout(120, TimeUnit.SECONDS).build()
         private val lock = Mutex()
         private var lastCallMs = 0L
 

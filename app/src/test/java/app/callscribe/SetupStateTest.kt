@@ -82,3 +82,17 @@ class SetupStateTest {
         assertTrue(SetupStep.EXISTING.skippable)
     }
 }
+
+class RecommendationsTest {
+    private val base = app.callscribe.ui.SetupStatus(
+        audioGranted = true, notificationsGranted = true, recordingCount = 3, batteryUnrestricted = true,
+        transcriberConfigured = true, analyzerConfigured = true,
+    )
+    @org.junit.Test fun skippedBatteryStepStaysRecommended() {
+        org.junit.Assert.assertEquals(emptyList<app.callscribe.ui.Recommendation>(), base.recommendations())
+        org.junit.Assert.assertEquals(
+            listOf(app.callscribe.ui.Recommendation.BATTERY, app.callscribe.ui.Recommendation.NOTIFICATIONS),
+            base.copy(batteryUnrestricted = false, notificationsGranted = false).recommendations(),
+        )
+    }
+}

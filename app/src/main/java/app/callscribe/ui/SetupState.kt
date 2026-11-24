@@ -44,12 +44,30 @@ data class SetupStatus(
         if (!transcriberConfigured) add("transcription not set up")
     }
 
+    /**
+     * Optional steps that were skipped but still matter, shown as recommendations at the top of Settings until done.
+     * Pure — unit-tested.
+     */
+    fun recommendations(): List<Recommendation> = buildList {
+        if (!batteryUnrestricted) add(Recommendation.BATTERY)
+        if (!notificationsGranted) add(Recommendation.NOTIFICATIONS)
+    }
+
     /** Where "Finish setup" should open: the first step behind a missing required item. */
     fun firstIncompleteRequired(): SetupStep? = when {
         !audioGranted || !notificationsGranted -> SetupStep.PERMISSIONS
         !transcriberConfigured -> SetupStep.TRANSCRIPTION
         else -> null
     }
+}
+
+/** A skipped-but-useful setup item. */
+enum class Recommendation(val title: String, val detail: String) {
+    BATTERY(
+        "Let CallScribe run in the background",
+        "Samsung's battery saver can delay automatic transcription. Set Battery to Unrestricted in the app's info.",
+    ),
+    NOTIFICATIONS("Turn on notifications", "Get told when a call is transcribed and whether it looked like spam."),
 }
 
 /** The two simple starting choices offered during onboarding, mapped onto the existing policies. */

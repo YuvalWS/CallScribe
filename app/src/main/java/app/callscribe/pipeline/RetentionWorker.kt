@@ -1,7 +1,7 @@
 package app.callscribe.pipeline
 
+import app.callscribe.Logx
 import android.content.Context
-import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import app.callscribe.AppGraph
@@ -20,7 +20,7 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         val graph = (applicationContext as CallScribeApp).graph
         val plan = currentPlan(graph)
         val cleared = deleteText(graph, plan)
-        Log.i("RetentionWorker", "text cleared: $cleared, audio due: ${plan.trashAudio.size}")
+        Logx.i("RetentionWorker", "text cleared: $cleared, audio due: ${plan.trashAudio.size}")
         if (plan.trashAudio.isNotEmpty()) graph.notifier.notifyRetention(plan.trashAudio.size, plan.audioBytes)
         return Result.success()
     }
@@ -38,6 +38,7 @@ class RetentionWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
             val dao = graph.db.recordings()
             val now = System.currentTimeMillis()
             for (r in plan.deleteText) {
+                Logx.d("RetentionWorker", "call ${r.id}: transcript and summary deleted by retention")
                 dao.update(
                     r.copy(
                         transcriptText = null, transcriptJson = null, analysisJson = null, summary = null,

@@ -25,7 +25,9 @@ import kotlinx.serialization.json.putJsonObject
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.BufferedSink
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 
@@ -68,27 +70,10 @@ class IvritRunPodTranscriber(
 
     override suspend fun submit(audio: AudioInput): String = withContext(Dispatchers.IO) {
         require(isConfigured()) { "RunPod endpoint or API key missing" }
-        val body = buildJsonObject {
-            putJsonObject("input") {
-                put("type", "blob")
-                put("model", model)
-                put("engine", if (diarize) "stable-whisper" else "faster-whisper")
-                put("streaming", false)
-                putJsonObject("transcribe_args") {
-                    put("blob", Base64.getEncoder().encodeToString(audio.bytes))
-                    put("language", "he")
-                    put("diarize", diarize)
-                    putJsonObject("output_options") {
-                        put("word_timestamps", false)
-                        put("extra_data", false)
-                    }
-                }
-            }
-        }.toString()
         val req = Request.Builder()
             .url("$baseUrl/$endpointId/run")
             .header("Authorization", "Bearer $apiKey")
-            .post(body.toRequestBody(JSON))
+            .post(RunBody(model, diarize, audio.bytes))
             .build()
         http.newCall(req).execute().use { resp ->
             val text = resp.body.string()
@@ -112,14 +97,87 @@ class IvritRunPodTranscriber(
         }
     }
 
+    /** POST /cancel: stops the job on RunPod so its GPU time stops being billed. */
+    override suspend fun cancel(handle: String) = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("$baseUrl/$endpointId/cancel/$handle")
+            .header("Authorization", "Bearer $apiKey")
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+        runCatching { http.newCall(req).execute().use { app.callscribe.Logx.i("RunPod", "cancel job → HTTP ${it.code}") } }
+            .onFailure { app.callscribe.Logx.w("RunPod", "cancel job failed", it) }
+        Unit
+    }
+
     private fun httpError(code: Int, body: String) = ProviderError(
         "RunPod HTTP $code: ${body.take(300)}",
         retryable = code == 429 || code >= 500,
     )
 
+    /**
+     * The /run request, streamed: the audio is base64-encoded chunk by chunk straight into the socket. Building it as
+     * one JSON string held the recording in memory four times over (bytes, base64, JSON, UTF-8), which ran the app
+     * out of memory with three uploads in parallel.
+     */
+    internal class RunBody(model: String, diarize: Boolean, private val audio: ByteArray) : RequestBody() {
+        private val head: ByteArray
+        private val tail: ByteArray
+        init {
+            val (h, t) = envelope(model, diarize)
+            head = h.toByteArray(); tail = t.toByteArray()
+        }
+        override fun contentType() = JSON
+        override fun contentLength() = head.size + 4L * ((audio.size + 2) / 3) + tail.size
+        override fun writeTo(sink: BufferedSink) {
+            sink.write(head)
+            val enc = Base64.getEncoder()
+            var i = 0
+            while (i < audio.size) {
+                val n = minOf(CHUNK, audio.size - i)
+                sink.write(enc.encode(audio.copyOfRange(i, i + n)))
+                i += n
+            }
+            sink.write(tail)
+        }
+    }
+
     companion object {
         private val JSON = "application/json".toMediaType()
-        private val defaultClient = OkHttpClient.Builder()
+        /** Multiple of 3, so chunks base64-encode without padding in the middle. */
+        private const val CHUNK = 3 * 16_384
+        private const val BLOB = "__CALLSCRIBE_AUDIO__"
+        const val EXECUTION_TIMEOUT_MS = 15 * 60_000
+        const val TTL_MS = 2 * 60 * 60_000
+
+        /** The JSON before and after the base64 audio (each half includes the string's quote). Pure — unit-tested. */
+        fun envelope(model: String, diarize: Boolean): Pair<String, String> {
+            val json = buildJsonObject {
+                // Limits on RunPod's side, so a stuck job can never bill for long: at most 15 min of GPU time, and the
+                // job is dropped if it hasn't finished within 2 h (we then report it failed instead of paying again).
+                putJsonObject("policy") {
+                    put("executionTimeout", EXECUTION_TIMEOUT_MS)
+                    put("ttl", TTL_MS)
+                }
+                putJsonObject("input") {
+                    put("type", "blob")
+                    put("model", model)
+                    put("engine", if (diarize) "stable-whisper" else "faster-whisper")
+                    put("streaming", false)
+                    putJsonObject("transcribe_args") {
+                        put("blob", BLOB)
+                        put("language", "he")
+                        put("diarize", diarize)
+                        putJsonObject("output_options") {
+                            put("word_timestamps", false)
+                            put("extra_data", false)
+                        }
+                    }
+                }
+            }.toString()
+            val at = json.indexOf(BLOB)
+            return json.substring(0, at) to json.substring(at + BLOB.length)
+        }
+        private val defaultClient = app.callscribe.providers.HttpLog.builder()
             .connectTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(120, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
