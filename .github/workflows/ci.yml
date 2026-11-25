@@ -52,7 +52,7 @@ jobs:
         # carry the number of the release they lead up to, plus "-dev.<run>", so they never get ahead of it.
         run: |
           base=$(grep '^callscribe.version=' gradle.properties | cut -d= -f2)
-          last=$(git ls-remote --tags origin 'refs/tags/v*' | sed -E 's#.*refs/tags/v[0-9]+\.[0-9]+\.([0-9]+)$##;t;d' | sort -n | tail -1)
+          last=$(git ls-remote --tags origin 'refs/tags/v*' | sed -E 's#.*refs/tags/v[0-9]+\.[0-9]+\.([0-9]+)$#\1#;t;d' | sort -n | tail -1)
           n=$(( ${last:-0} + 1 ))
           if [ "$IS_RELEASE" = "true" ]; then suffix=""; else suffix="-dev.${GITHUB_RUN_NUMBER}"; fi
           echo "number=${n}" >> "$GITHUB_OUTPUT"
