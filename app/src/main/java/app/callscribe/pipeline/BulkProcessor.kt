@@ -13,6 +13,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
+import app.callscribe.providers.ivrit.RunPodBalance
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
@@ -33,7 +34,16 @@ import kotlinx.coroutines.launch
 import java.time.Duration
 
 /** One bulk run: which calls, what it cost before it started, and where it stops. Persisted across restarts. */
-data class BulkRun(val ids: List<Long>, val startUsd: Double, val capUsd: Double, val stoppedReason: String? = null)
+data class BulkRun(
+    val ids: List<Long>, val startUsd: Double, val capUsd: Double, val stoppedReason: String? = null,
+    /** RunPod account balance when the run started (null: not a RunPod run, or it couldn't be read). */
+    val balanceStart: Double? = null,
+    /** The calls' transcription cost estimate before the run, to tell this run's estimate apart. */
+    val startTranscribeUsd: Double = 0.0,
+    /** What RunPod really charged (balance drop), once measured; [chargeNote] explains when it couldn't be. */
+    val chargedUsd: Double? = null,
+    val chargeNote: String? = null,
+)
 
 /** Progress of a [BulkRun], computed from the calls themselves. Pure — unit-tested. */
 data class BulkProgress(val total: Int, val done: Int, val failed: Int, val spentUsd: Double, val running: Boolean) {
@@ -78,7 +88,13 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
 
     private fun load(): BulkRun? {
         val ids = prefs.getString("ids", null)?.split(',')?.mapNotNull { it.toLongOrNull() } ?: return null
-        return BulkRun(ids, prefs.getFloat("start", 0f).toDouble(), prefs.getFloat("cap", 0f).toDouble(), prefs.getString("stopped", null))
+        return BulkRun(
+            ids, prefs.getFloat("start", 0f).toDouble(), prefs.getFloat("cap", 0f).toDouble(), prefs.getString("stopped", null),
+            balanceStart = prefs.getString("balance_start", null)?.toDoubleOrNull(),
+            startTranscribeUsd = prefs.getString("start_tr", null)?.toDoubleOrNull() ?: 0.0,
+            chargedUsd = prefs.getString("charged", null)?.toDoubleOrNull(),
+            chargeNote = prefs.getString("charge_note", null),
+        )
     }
 
     private fun save(r: BulkRun?) {
@@ -88,6 +104,10 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
                 putFloat("start", r.startUsd.toFloat())
                 putFloat("cap", r.capUsd.toFloat())
                 putString("stopped", r.stoppedReason)
+                putString("balance_start", r.balanceStart?.toString())
+                putString("start_tr", r.startTranscribeUsd.toString())
+                putString("charged", r.chargedUsd?.toString())
+                putString("charge_note", r.chargeNote)
             }
         }.apply()
         _run.value = r
@@ -105,7 +125,15 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
         val previous = _run.value?.takeIf { it.stoppedReason == null && BulkProgress.of(it, dao.all()).running }
         val ids = (previous?.ids.orEmpty() + plan.all.map { it.id }).distinct()
         val startUsd = (previous?.startUsd ?: 0.0) + plan.all.sumOf { it.totalCostUsd }
-        save(BulkRun(ids, startUsd, (previous?.capUsd ?: 0.0) + capUsd))
+        // RunPod's real charge is measured from the account balance around the run (see measureCharge).
+        val balanceStart = if (previous != null) previous.balanceStart
+        else if (!onDevice && s.transcriberId == BulkEstimator.RUNPOD && plan.transcribe.isNotEmpty()) {
+            graph.secrets.get(app.callscribe.data.SecretStore.Key.RUNPOD_API_KEY)?.let { key ->
+                runCatching { RunPodBalance.read(key) }.onFailure { Logx.w("BulkProcessor", "balance not readable: ${it.message}") }.getOrNull()
+            }
+        } else null
+        val startTr = (previous?.startTranscribeUsd ?: 0.0) + plan.all.sumOf { it.transcriptionCostUsd ?: 0.0 }
+        save(BulkRun(ids, startUsd, (previous?.capUsd ?: 0.0) + capUsd, balanceStart = balanceStart, startTranscribeUsd = startTr))
 
         val lanes = if (onDevice) 1 else BulkEstimator.CLOUD_LANES
         val wm = WorkManager.getInstance(context)
@@ -172,6 +200,13 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
         }
     }
 
+    /** The run's analysis (AI summary) cost, which the RunPod balance doesn't include. */
+    suspend fun analysisSpent(r: BulkRun): Double {
+        val p = BulkProgress.of(r, graph.db.recordings().all())
+        val rows = graph.db.recordings().all().filter { it.id in r.ids.toSet() }
+        return (p.spentUsd - (rows.sumOf { it.transcriptionCostUsd ?: 0.0 } - r.startTranscribeUsd)).coerceAtLeast(0.0)
+    }
+
     /** Hides the finished run's summary. */
     fun dismiss() {
         save(null)
@@ -202,9 +237,46 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
         else -> Status.NOT_TRANSCRIBED
     }
 
+    /**
+     * After a RunPod run ends, reads the balance again (charges settle ~5 min later), records what RunPod really
+     * charged and corrects the price per second from it. Runs in [ChargeCheckWorker].
+     */
+    suspend fun measureCharge() {
+        val r = _run.value ?: return
+        val start = r.balanceStart ?: return
+        if (r.chargedUsd != null || r.chargeNote != null) return
+        val key = graph.secrets.get(app.callscribe.data.SecretStore.Key.RUNPOD_API_KEY) ?: return
+        val now = RunPodBalance.read(key)
+        val charged = start - now
+        val rows = graph.db.recordings().all().filter { it.id in r.ids.toSet() }
+        val estimated = rows.sumOf { it.transcriptionCostUsd ?: 0.0 } - r.startTranscribeUsd
+        if (charged < 0) {
+            save(r.copy(chargeNote = "RunPod's charge couldn't be measured (the balance went up — a top-up?)"))
+        } else {
+            save(r.copy(chargedUsd = charged))
+            val s = graph.settings.get()
+            RunPodBalance.calibratedPrice(s.runpodPricePerSec, estimated, charged)?.let { price ->
+                graph.settings.update { it.copy(runpodPricePerSec = price) }
+                Logx.i("BulkProcessor", "RunPod price per second %.6f → %.6f".format(s.runpodPricePerSec, price))
+            }
+        }
+        Logx.i("BulkProcessor", "RunPod charged %.4f for the run (estimated %.4f)".format(charged, estimated))
+        updateNotification()
+    }
+
     /** One notification for the whole run, refreshed after each call. */
     suspend fun updateNotification() {
         val r = _run.value ?: return
+        val pNow = BulkProgress.of(r, graph.db.recordings().all())
+        if (!pNow.running && r.balanceStart != null && r.chargedUsd == null && r.chargeNote == null) {
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "bulk-charge-check", ExistingWorkPolicy.KEEP,
+                OneTimeWorkRequestBuilder<ChargeCheckWorker>()
+                    .setInitialDelay(RunPodBalance.SETTLE_MINUTES, java.util.concurrent.TimeUnit.MINUTES)
+                    .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                    .build(),
+            )
+        }
         if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val p = BulkProgress.of(r, graph.db.recordings().all())
         val nm = NotificationManagerCompat.from(context)
@@ -214,7 +286,7 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
             context, NOTE_ID, Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val spent = "spent ${app.callscribe.ui.Fmt.usd(p.spentUsd)}"
+        val spent = "spent ${app.callscribe.ui.Fmt.usd(r.chargedUsd?.let { it + analysisSpent(r) } ?: p.spentUsd)}"
         val failed = if (p.failed > 0) " · ${p.failed} failed" else ""
         val b = NotificationCompat.Builder(context, CHANNEL)
             .setSmallIcon(R.drawable.ic_stat_callscribe)
@@ -235,6 +307,16 @@ class BulkProcessor(private val context: Context, private val graph: AppGraph) {
                 .setAutoCancel(true)
         }
         nm.notify(NOTE_ID, b.build())
+    }
+}
+
+/** Reads RunPod's balance a few minutes after a bulk run ends (see [BulkProcessor.measureCharge]). */
+class ChargeCheckWorker(ctx: Context, params: androidx.work.WorkerParameters) : androidx.work.CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result = try {
+        (applicationContext as CallScribeApp).graph.bulk.measureCharge()
+        Result.success()
+    } catch (e: app.callscribe.providers.ProviderError) {
+        if (e.retryable && runAttemptCount < 3) Result.retry() else Result.success()
     }
 }
 

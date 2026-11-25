@@ -34,7 +34,19 @@ class SyncEngine(
     private val store: RecordingStore,
     private val hasher: suspend (MediaFile) -> String,
     private val zone: ZoneId = ZoneId.systemDefault(),
+    private val nowSec: () -> Long = { System.currentTimeMillis() / 1000 },
 ) {
+    companion object {
+        /**
+         * Samsung writes the recording into its final file while the call is still going; until the call ends the
+         * file has no readable duration. Such a file is left for the next scan (the finished file fires the trigger
+         * again). After this long a file without a duration is taken as is (a broken file, not a call in progress).
+         */
+        const val IN_PROGRESS_GRACE_SEC = 3 * 60 * 60L
+
+        fun stillRecording(f: MediaFile, nowSec: Long) = f.durationMs <= 0 && nowSec - f.dateModifiedSec < IN_PROGRESS_GRACE_SEC
+    }
+
     suspend fun sync(files: List<MediaFile>): SyncResult {
         val newRows = mutableListOf<RecordingEntity>()
         val seenIds = mutableSetOf<Long>()
@@ -42,6 +54,10 @@ class SyncEngine(
 
         for (f in files) {
             val byId = store.byMediaId(f.mediaId)
+            if (stillRecording(f, nowSec())) {
+                byId?.let { seenIds += it.id } // not finished yet: neither new nor missing
+                continue
+            }
             if (byId != null && byId.sizeBytes == f.sizeBytes && byId.dateModifiedSec == f.dateModifiedSec) {
                 seenIds += byId.id
                 if (byId.fileMissing || byId.displayName != f.displayName) {
@@ -62,6 +78,20 @@ class SyncEngine(
                 )
                 seenIds += byHash.id
                 relinked++
+                continue
+            }
+            if (byId != null && byId.transcriptText == null && byId.analysisJson == null) {
+                // The same file grew (e.g. picked up mid-call by an older version): replace the unprocessed row's audio
+                // details and process it again as a new call, instead of leaving a broken duplicate behind.
+                val fresh = byId.copy(
+                    contentHash = hash, uri = f.uri, displayName = f.displayName, relativePath = f.relativePath,
+                    sizeBytes = f.sizeBytes, durationMs = f.durationMs, dateModifiedSec = f.dateModifiedSec,
+                    fileMissing = false, status = app.callscribe.data.Status.NOT_TRANSCRIBED, error = null,
+                    providerJobId = null, updatedAt = System.currentTimeMillis(),
+                )
+                store.update(fresh)
+                newRows += fresh
+                seenIds += fresh.id
                 continue
             }
             val parsed = RecordingNameParser.parse(f.displayName)

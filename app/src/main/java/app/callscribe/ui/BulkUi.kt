@@ -46,7 +46,7 @@ internal fun aboutMinutes(min: Double): String {
 internal fun estimateFor(graph: AppGraph, s: AppSettings, rows: List<RecordingEntity>, all: List<RecordingEntity>, summarize: Boolean): Pair<BulkPlan, BulkEstimate> {
     val analyzer = graph.providers.analyzer(s)?.takeIf { it.isConfigured() }
     val plan = BulkPlan.of(rows, summarize && analyzer != null)
-    return plan to BulkEstimator.estimate(plan, all, s.transcriberId, analyzer?.id)
+    return plan to BulkEstimator.estimate(plan, all, s.transcriberId, analyzer?.id, s.runpodPricePerSec)
 }
 
 /** The numbers of an estimate, as a few lines. Shared by the confirm dialog and onboarding. */
@@ -137,6 +137,14 @@ fun BulkBanner(graph: AppGraph, rows: List<RecordingEntity>) {
                 )
                 if (active) LinearProgressIndicator(progress = { p.done.toFloat() / p.total.coerceAtLeast(1) }, modifier = Modifier.fillMaxWidth())
                 Text("Spent ${Fmt.usd(p.spentUsd)}" + (if (p.failed > 0) " · ${p.failed} failed" else ""), style = MaterialTheme.typography.bodySmall)
+                // RunPod's real charge, from the account balance a few minutes after the run.
+                val chargeLine = when {
+                    r.balanceStart == null || active -> null
+                    r.chargedUsd != null -> "RunPod charged ${Fmt.usd(r.chargedUsd)} for transcription (from your RunPod balance)"
+                    r.chargeNote != null -> r.chargeNote
+                    else -> "Checking RunPod's real charge — it shows on your balance a few minutes after the run"
+                }
+                chargeLine?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             }
             if (active) TextButton(onClick = { graph.bulk.cancel() }) { Text("Cancel") }
             else IconButton(onClick = { graph.bulk.dismiss() }) { Icon(Icons.Default.Close, "Hide") }

@@ -26,12 +26,13 @@ private class FakeStore : RecordingStore {
 }
 
 class SyncEngineTest {
-    private fun file(id: Long, name: String, size: Long = 100, mod: Long = 1) =
-        MediaFile(id, "content://media/$id", name, "Recordings/Call/", size, 1000, 1_000, mod)
+    private fun file(id: Long, name: String, size: Long = 100, mod: Long = 1, dur: Long = 1000) =
+        MediaFile(id, "content://media/$id", name, "Recordings/Call/", size, dur, 1_000, mod)
+    private var now = 10_000L
 
     private var hashCalls = 0
     private val hashes = mutableMapOf<Long, String>()
-    private fun engine(store: FakeStore) = SyncEngine(store, { f -> hashCalls++; hashes.getValue(f.mediaId) }, ZoneOffset.UTC)
+    private fun engine(store: FakeStore) = SyncEngine(store, { f -> hashCalls++; hashes.getValue(f.mediaId) }, ZoneOffset.UTC, { now })
 
     @Test fun newFilesInsertedOnceAndUnchangedFilesNotRehashed() = runBlocking {
         val store = FakeStore()
@@ -70,6 +71,43 @@ class SyncEngineTest {
         assertTrue(store.rows[1]!!.fileMissing)
     }
 
+    @Test fun fileStillBeingRecordedIsLeftForLater() = runBlocking {
+        val store = FakeStore()
+        hashes[1] = "partial"
+        // Mid-call: Samsung's file exists but has no duration yet.
+        val r1 = engine(store).sync(listOf(file(1, "Call Mom_250101_101010.m4a", size = 2_000, mod = now - 60, dur = 0)))
+        assertEquals(0, r1.newRows.size)
+        assertEquals(0, hashCalls)
+        // Call ended: same MediaStore id, final size and duration → one new call.
+        hashes[1] = "final"
+        val r2 = engine(store).sync(listOf(file(1, "Call Mom_250101_101010.m4a", size = 5_000, mod = now, dur = 313_000)))
+        assertEquals(1, r2.newRows.size)
+        assertEquals(313_000L, store.rows.values.single().durationMs)
+    }
+
+    @Test fun oldFileWithoutDurationIsStillImported() = runBlocking {
+        val store = FakeStore()
+        hashes[1] = "h1"
+        val r = engine(store).sync(listOf(file(1, "broken.m4a", mod = now - SyncEngine.IN_PROGRESS_GRACE_SEC - 1, dur = 0)))
+        assertEquals(1, r.newRows.size)
+    }
+
+    @Test fun grownFileReplacesItsUnprocessedRow() = runBlocking {
+        val store = FakeStore()
+        hashes[1] = "partial"
+        // Picked up mid-call by an older version (duration was readable but the file was incomplete), and failed.
+        engine(store).sync(listOf(file(1, "Call Mom_250101_101010.m4a", size = 2_000, mod = 5)))
+        store.rows[1] = store.rows[1]!!.copy(status = app.callscribe.data.Status.FAILED, error = "Invalid data")
+        hashes[1] = "final"
+        val r = engine(store).sync(listOf(file(1, "Call Mom_250101_101010.m4a", size = 5_000, mod = 9)))
+        assertEquals(1, r.newRows.size)
+        assertEquals(0, r.missing)
+        val row = store.rows.values.single()
+        assertEquals("final", row.contentHash)
+        assertEquals(app.callscribe.data.Status.NOT_TRANSCRIBED, row.status)
+        assertEquals(null, row.error)
+    }
+
     @Test fun callTimeComesFromFileName() = runBlocking {
         val store = FakeStore()
         hashes[1] = "h1"
@@ -94,7 +132,8 @@ class RunPodParseTest {
         assertEquals("שלום מה שלומך?", st.transcript.text)
         assertEquals(2, st.transcript.segments.size)
         assertEquals("SPEAKER_01", st.transcript.segments[1].speaker)
-        assertEquals(0.0025, st.cost!!.usd, 1e-9)
+        // Warm worker (800 ms wait): 12.5 s transcribing + 5 s idle timeout billed.
+        assertEquals(0.0035, st.cost!!.usd, 1e-9)
         assertEquals(12500L, st.cost!!.gpuMs)
     }
 
@@ -172,5 +211,27 @@ class RunPodSetupTest {
         val (head, _) = IvritRunPodTranscriber.envelope("m", false)
         assertTrue(head.contains("\"executionTimeout\":900000"))
         assertTrue(head.contains("\"ttl\":7200000"))
+    }
+}
+
+class RunPodBillingTest {
+    @Test fun billedTimeAddsStartUpAndIdle() {
+        // Measured: 9.8 s wait (worker booting) + 3.1 s transcribing; RunPod charged about 18 s of worker time.
+        assertEquals(3_100L + 9_800 + 5_000, IvritRunPodTranscriber.billedMs(3_100, 9_800))
+        // A warm worker picked it up at once: only the job and the idle timeout.
+        assertEquals(3_100L + 5_000, IvritRunPodTranscriber.billedMs(3_100, 400))
+        // A long wait is queueing behind other calls, capped as start-up.
+        assertEquals(3_100L + IvritRunPodTranscriber.MAX_COLD_START_MS + 5_000, IvritRunPodTranscriber.billedMs(3_100, 600_000))
+    }
+
+    @Test fun balanceParsedAndPriceCalibrated() {
+        assertEquals(13.9421759851, app.callscribe.providers.ivrit.RunPodBalance.parse("""{"data":{"myself":{"clientBalance":13.9421759851}}}""")!!, 1e-12)
+        assertEquals(null, app.callscribe.providers.ivrit.RunPodBalance.parse("""{"errors":[{"message":"x"}]}"""))
+        // Charged twice the estimate → price doubles.
+        assertEquals(0.0006, app.callscribe.providers.ivrit.RunPodBalance.calibratedPrice(0.0003, 0.05, 0.10)!!, 1e-12)
+        // Too small a run to measure.
+        assertEquals(null, app.callscribe.providers.ivrit.RunPodBalance.calibratedPrice(0.0003, 0.005, 0.01))
+        // Kept within RunPod's GPU price range.
+        assertEquals(0.0020, app.callscribe.providers.ivrit.RunPodBalance.calibratedPrice(0.0003, 0.02, 1.0)!!, 1e-12)
     }
 }

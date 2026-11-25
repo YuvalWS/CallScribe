@@ -20,6 +20,7 @@ class Notifier(private val context: Context) {
         const val EXTRA_RECORDING_ID = "recording_id"
         const val EXTRA_OPEN_RETENTION = "open_retention"
         const val EXTRA_OPEN_BACKUP = "open_backup"
+        const val EXTRA_OPEN_PROVIDERS = "open_providers"
     }
 
     fun createChannel() {
@@ -41,6 +42,24 @@ class Notifier(private val context: Context) {
             .setAutoCancel(true)
             .build()
         NotificationManagerCompat.from(context).notify(-2, n)
+    }
+
+    /** A connection check finished with an error after the user left the Providers screen. */
+    fun notifyConnectionFailed(provider: String, message: String) {
+        if (context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        val intent = Intent(context, MainActivity::class.java)
+            .putExtra(EXTRA_OPEN_PROVIDERS, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val pi = PendingIntent.getActivity(context, -5, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_callscribe)
+            .setContentTitle("$provider connection failed")
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        NotificationManagerCompat.from(context).notify(-5, n)
     }
 
     fun notifyBackupSignIn() {

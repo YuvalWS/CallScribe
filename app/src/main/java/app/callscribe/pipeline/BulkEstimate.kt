@@ -67,11 +67,13 @@ object BulkEstimator {
     const val ON_DEVICE = "ondevice-zipformer-he"
 
     /**
-     * RunPod: each call costs a fixed part (worker start, model load, upload) plus GPU time per audio minute.
-     * Measured on a real endpoint: 0:15 → $0.0011, 3:51 → $0.0022, 14 min → $0.003.
+     * RunPod transcription time (what the job status reports), measured on the user's endpoint: a 20 s clip took
+     * 3.1 s, a 5:13 call 12.5 s. Billed worker time adds start-up and the idle timeout ([RUNPOD_OVERHEAD_SEC]).
      */
-    const val RUNPOD_USD_PER_CALL = 0.0008
-    const val RUNPOD_USD_PER_MIN = 0.0002
+    const val RUNPOD_EXEC_SEC_PER_CALL = 2.0
+    const val RUNPOD_EXEC_SEC_PER_MIN = 2.4
+    /** Worker start-up (~10 s) + idle timeout (5 s) billed around each call. */
+    const val RUNPOD_OVERHEAD_SEC = 15.0
     /** Measured on a Galaxy S20 FE: ~25 s per audio minute (RTF 0.41). */
     const val ON_DEVICE_SEC_PER_MIN = 25.0
     /** Calls processed in parallel against a cloud transcriber. */
@@ -102,7 +104,10 @@ object BulkEstimator {
         }
     }
 
-    fun estimate(plan: BulkPlan, history: List<RecordingEntity>, transcriberId: String?, analyzerId: String?): BulkEstimate {
+    fun estimate(
+        plan: BulkPlan, history: List<RecordingEntity>, transcriberId: String?, analyzerId: String?,
+        runpodPricePerSec: Double = app.callscribe.data.DEFAULT_RUNPOD_PRICE,
+    ): BulkEstimate {
         val notes = mutableListOf<String>()
         val audioMin = plan.transcribe.sumOf { it.durationMs } / 60_000.0
 
@@ -110,15 +115,17 @@ object BulkEstimator {
         val trUsd = when (transcriberId) {
             ON_DEVICE -> 0.0
             RUNPOD -> {
-                val past = history.filter { it.transcriberId == RUNPOD && (it.transcriptionCostUsd ?: 0.0) > 0 && it.durationMs > 0 }
-                val (perCall, perMin) = if (past.size >= MIN_HISTORY) {
+                // Fit transcription seconds per call from history (the job's own timing, stable across price changes),
+                // then price it as billed worker time at the current price.
+                val past = history.filter { it.transcriberId == RUNPOD && (it.transcriptionGpuMs ?: 0) > 0 && it.durationMs > 0 }
+                val (execPerCall, execPerMin) = if (past.size >= MIN_HISTORY) {
                     notes += "Based on your ${past.size} past RunPod transcriptions."
-                    fit(past.map { it.durationMs / 60_000.0 to it.transcriptionCostUsd!! })
+                    fit(past.map { it.durationMs / 60_000.0 to it.transcriptionGpuMs!! / 1000.0 })
                 } else {
-                    notes += "Based on typical RunPod prices; it gets more accurate as you transcribe."
-                    RUNPOD_USD_PER_CALL to RUNPOD_USD_PER_MIN
+                    notes += "Based on typical RunPod timings; it gets more accurate as you transcribe."
+                    RUNPOD_EXEC_SEC_PER_CALL to RUNPOD_EXEC_SEC_PER_MIN
                 }
-                plan.transcribe.size * perCall + audioMin * perMin
+                runpodPricePerSec * (plan.transcribe.size * (execPerCall + RUNPOD_OVERHEAD_SEC) + audioMin * execPerMin)
             }
             else -> 0.0
         }

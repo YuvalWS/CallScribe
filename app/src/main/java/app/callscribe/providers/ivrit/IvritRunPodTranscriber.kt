@@ -155,6 +155,24 @@ class IvritRunPodTranscriber(
          */
         const val MIN_DIARIZE_MS = 20_000L
 
+        /** The endpoint's idle timeout (RunPodSetup creates endpoints with 5 s): the worker is billed while it waits. */
+        const val IDLE_MS = 5_000L
+        /** A job that waited longer than this started a worker (cold start, billed); shorter = a warm worker took it. */
+        const val WARM_DELAY_MS = 3_000L
+        /** Longer waits are queueing behind other jobs (not billed to this one), not a slow start. */
+        const val MAX_COLD_START_MS = 30_000L
+
+        /**
+         * What RunPod bills for one job: the worker runs from start to stop — start-up (when the job had to wait for a
+         * worker to boot), the transcription itself, and the idle timeout after it. The job status reports only the
+         * transcription time, which alone undercounts ~5–10× on short calls (measured against the account balance).
+         * Pure — unit-tested.
+         */
+        fun billedMs(execMs: Long, delayMs: Long): Long {
+            val coldStart = if (delayMs > WARM_DELAY_MS) delayMs.coerceAtMost(MAX_COLD_START_MS) else 0
+            return execMs + coldStart + IDLE_MS
+        }
+
         fun diarizeFor(wanted: Boolean, durationMs: Long) = wanted && (durationMs == 0L || durationMs >= MIN_DIARIZE_MS)
 
         /** The JSON before and after the base64 audio (each half includes the string's quote). Pure — unit-tested. */
@@ -203,7 +221,11 @@ class IvritRunPodTranscriber(
                     val segments = collectSegments(output).sortedBy { it.start }
                     val textOut = segments.joinToString(" ") { it.text.trim() }.trim()
                     val execMs = obj["executionTime"]?.jsonPrimitive?.longOrNull
-                    val cost = execMs?.let { Cost(it / 1000.0 * pricePerSec, "≈ ${"%.1f".format(it / 1000.0)} s GPU", it) }
+                    val delayMs = obj["delayTime"]?.jsonPrimitive?.longOrNull ?: 0
+                    val cost = execMs?.let {
+                        val billed = billedMs(it, delayMs)
+                        Cost(billed / 1000.0 * pricePerSec, "≈ ${"%.0f".format(billed / 1000.0)} s worker time", it)
+                    }
                     TranscriptionState.Done(Transcript(textOut, segments, "he", output.toString()), cost)
                 }
                 "FAILED" -> TranscriptionState.Failed("RunPod job failed: ${obj["error"]?.toString()?.take(300) ?: "unknown"}", false)

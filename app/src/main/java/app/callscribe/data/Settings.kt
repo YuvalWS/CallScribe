@@ -25,6 +25,9 @@ import javax.crypto.spec.GCMParameterSpec
 
 private val Context.dataStore by preferencesDataStore(name = "settings")
 
+const val DEFAULT_RUNPOD_PRICE = 0.00034
+const val OLD_RUNPOD_PRICE = 0.00019
+
 /** Non-secret settings only (API keys live in [SecretStore]); backed up to Drive as JSON. */
 @Serializable
 data class AppSettings(
@@ -38,8 +41,12 @@ data class AppSettings(
     /** Only changed by debug builds (fake server tests). */
     val runpodBaseUrl: String = "https://api.runpod.ai/v2",
     val runpodModel: String = "ivrit-ai/whisper-large-v3-turbo-ct2",
-    /** USD per second of GPU execution, used for the cost estimate. User-editable; depends on the GPU chosen on RunPod. */
-    val runpodPricePerSec: Double = 0.00019,
+    /**
+     * USD per second of worker time, for the cost estimate. Depends on which GPU RunPod gives the job (the default
+     * endpoint allows 16–48 GB cards, $0.00016–0.00034/s); starts at the dearest and is corrected from the account
+     * balance after each bulk run. User-editable.
+     */
+    val runpodPricePerSec: Double = DEFAULT_RUNPOD_PRICE,
     val diarize: Boolean = false,
     val claudeModel: String = "claude-opus-5-5",
     val geminiModel: String = "gemini-3.5-flash-lite",
@@ -111,7 +118,8 @@ class SettingsRepository(private val context: Context) {
             runpodEndpointId = this[K.rpEndpoint] ?: d.runpodEndpointId,
             runpodBaseUrl = this[K.rpBase] ?: d.runpodBaseUrl,
             runpodModel = this[K.rpModel] ?: d.runpodModel,
-            runpodPricePerSec = this[K.rpPrice] ?: d.runpodPricePerSec,
+            // 0.00019 was the old default (the cheapest GPU only): treat it as unset.
+            runpodPricePerSec = this[K.rpPrice]?.takeIf { it != OLD_RUNPOD_PRICE } ?: d.runpodPricePerSec,
             diarize = this[K.diarize] ?: d.diarize,
             claudeModel = this[K.claudeModel] ?: d.claudeModel,
             geminiModel = this[K.gemModel] ?: d.geminiModel,

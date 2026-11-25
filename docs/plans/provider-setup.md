@@ -1,4 +1,4 @@
-# Plan: easier provider setup (status: §1, §3 built; §2 built for Gemini and OpenRouter; §4 measured)
+# Plan: easier provider setup (status: §1, §3 built; §2 built for Gemini and OpenRouter; §4 built)
 
 Today the user creates a RunPod endpoint by hand, copies its ID, creates an API key, and types model names.
 That's the hardest part of onboarding. This plan makes it mostly automatic without adding a CallScribe server.
@@ -71,8 +71,14 @@ Hard-coding one model name ages badly; making users type names is error-prone. D
   user's restricted key. The REST catalog (`/v2/catalog/gpus`, has `price.serverless`) needs `catalog:read`; billing
   history and `/v2/billing/balance` need `billing:read` — the user's key has neither. GraphQL `gpuTypes` has no
   serverless price field.
-- Options: (a) per-call estimate = (delay + execution + idle timeout) × price; (b) bulk runs record the balance before
-  and ~6 min after, and show the real total; (c) with a `billing:read` key, per-endpoint billing history (exact).
+- **Built:** (a) each call's cost is billed worker time — execution + start-up (the job's wait when over 3 s, capped at
+  30 s) + the 5 s idle timeout — × the price (`IvritRunPodTranscriber.billedMs`); the default price is $0.00034/s (the
+  dearest GPU in the default endpoint's list), and a saved 0.00019 (the old default) counts as unset. Bulk estimates fit
+  transcription seconds from history and price them the same way. (b) A RunPod bulk run reads the balance at the start
+  and 7 min after it ends (`RunPodBalance`, `ChargeCheckWorker`), shows "RunPod charged $X" on the bulk card, and
+  scales the price per second by charged / estimated (runs over $0.01, kept within $0.0001–0.002/s).
+- Not built: (c) billing history with a `billing:read` key. A single call's real charge isn't measured (other activity
+  on the account and the 5-minute delay make one call too small to tell apart).
 
 ## Open questions
 

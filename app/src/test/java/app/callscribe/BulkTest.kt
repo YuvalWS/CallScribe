@@ -47,18 +47,19 @@ class BulkEstimatorTest {
 
     @Test fun runPodUsesDefaultRateWithoutHistory() {
         val e = BulkEstimator.estimate(BulkPlan.of(ten, false), emptyList(), BulkEstimator.RUNPOD, null)
-        assertEquals(10 * BulkEstimator.RUNPOD_USD_PER_CALL + 30 * BulkEstimator.RUNPOD_USD_PER_MIN, e.usd, 1e-9)
+        val p = app.callscribe.data.DEFAULT_RUNPOD_PRICE
+        assertEquals(p * (10 * (BulkEstimator.RUNPOD_EXEC_SEC_PER_CALL + BulkEstimator.RUNPOD_OVERHEAD_SEC) + 30 * BulkEstimator.RUNPOD_EXEC_SEC_PER_MIN), e.usd, 1e-9)
         assertEquals(10, e.calls)
         assertTrue(e.minutes > 0)
     }
 
     @Test fun runPodUsesOwnHistoryWhenThereIsEnough() {
-        // Past calls follow cost = $0.001 + $0.0003/min exactly.
+        // Past calls took exactly 1 s + 2 s per audio minute to transcribe.
         val past = listOf(1.0, 4.0, 10.0).mapIndexed { i, m ->
-            call(20L + i, min = m).copy(transcriberId = BulkEstimator.RUNPOD, transcriptionCostUsd = 0.001 + 0.0003 * m, transcriptText = "t")
+            call(20L + i, min = m).copy(transcriberId = BulkEstimator.RUNPOD, transcriptionGpuMs = (1000 + 2000 * m).toLong(), transcriptText = "t")
         }
-        val e = BulkEstimator.estimate(BulkPlan.of(ten, false), past, BulkEstimator.RUNPOD, null)
-        assertEquals(10 * 0.001 + 30 * 0.0003, e.usd, 1e-6)
+        val e = BulkEstimator.estimate(BulkPlan.of(ten, false), past, BulkEstimator.RUNPOD, null, runpodPricePerSec = 0.0003)
+        assertEquals(0.0003 * (10 * (1.0 + BulkEstimator.RUNPOD_OVERHEAD_SEC) + 30 * 2.0), e.usd, 1e-6)
     }
 
     @Test fun fitFallsBackToAveragePerCallForSimilarLengths() {
@@ -87,7 +88,9 @@ class BulkEstimatorTest {
 
     @Test fun capIsTwiceTheEstimateWithAFloor() {
         val e = BulkEstimator.estimate(BulkPlan.of(ten, false), emptyList(), BulkEstimator.RUNPOD, null)
-        assertEquals(0.05, e.capUsd, 1e-9) // 2 × $0.014 is under the 5-cent floor
+        assertEquals(2 * e.usd, e.capUsd, 1e-9)
+        val one = BulkEstimator.estimate(BulkPlan.of(ten.take(1), false), emptyList(), BulkEstimator.RUNPOD, null)
+        assertEquals(0.05, one.capUsd, 1e-9) // 2 × ~$0.008 is under the 5-cent floor
     }
 }
 

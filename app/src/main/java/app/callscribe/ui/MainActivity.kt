@@ -33,6 +33,7 @@ class MainActivity : ComponentActivity() {
     private var openId by mutableStateOf(-1L)
     private var openRetention by mutableStateOf(false)
     private var openBackup by mutableStateOf(false)
+    private var openProviders by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,12 +41,13 @@ class MainActivity : ComponentActivity() {
         openId = intent.getLongExtra(Notifier.EXTRA_RECORDING_ID, -1)
         openRetention = intent.getBooleanExtra(Notifier.EXTRA_OPEN_RETENTION, false)
         openBackup = intent.getBooleanExtra(Notifier.EXTRA_OPEN_BACKUP, false)
+        openProviders = intent.getBooleanExtra(Notifier.EXTRA_OPEN_PROVIDERS, false)
         val graph = (application as CallScribeApp).graph
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
                 Surface(Modifier.fillMaxSize()) {
                     SetupGate(graph) {
-                        AppNav(graph, openId, openRetention, openBackup) { openId = -1; openRetention = false; openBackup = false }
+                        AppNav(graph, openId, openRetention, openBackup, openProviders) { openId = -1; openRetention = false; openBackup = false; openProviders = false }
                     }
                 }
             }
@@ -57,16 +59,18 @@ class MainActivity : ComponentActivity() {
         openId = intent.getLongExtra(Notifier.EXTRA_RECORDING_ID, -1)
         openRetention = intent.getBooleanExtra(Notifier.EXTRA_OPEN_RETENTION, false)
         openBackup = intent.getBooleanExtra(Notifier.EXTRA_OPEN_BACKUP, false)
+        openProviders = intent.getBooleanExtra(Notifier.EXTRA_OPEN_PROVIDERS, false)
     }
 }
 
 @Composable
-private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: Boolean, openBackup: Boolean, consumed: () -> Unit) {
+private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: Boolean, openBackup: Boolean, openProviders: Boolean, consumed: () -> Unit) {
     val nav = rememberNavController()
-    LaunchedEffect(openId, openRetention, openBackup) {
+    LaunchedEffect(openId, openRetention, openBackup, openProviders) {
         if (openId > 0) { nav.navigate("detail/$openId"); consumed() }
         if (openRetention) { nav.navigate("retention"); consumed() }
         if (openBackup) { nav.navigate("backup"); consumed() }
+        if (openProviders) { nav.navigate("providers"); consumed() }
     }
     NavHost(nav, startDestination = "list") {
         composable("list") {

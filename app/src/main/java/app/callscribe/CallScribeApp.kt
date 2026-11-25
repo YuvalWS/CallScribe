@@ -27,6 +27,8 @@ class AppGraph(context: Context) {
     val models = app.callscribe.providers.ondevice.ModelStore(context)
     val providers = ProviderRegistry(secrets, models)
     val notifier = Notifier(context)
+    /** Work that must outlive a screen (e.g. a connection check started from Settings). */
+    val appScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.IO)
     /** Optional Google Drive backup (off by default). */
     val drive by lazy { app.callscribe.backup.DriveBackup(context.applicationContext, this) }
     val contactGroups = ContactGroupsReader(context)

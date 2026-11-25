@@ -113,6 +113,15 @@ private fun RunPodSection(graph: AppGraph, st: AppSettings) {
     var model by remember { mutableStateOf(st.runpodModel) }
     var price by remember { mutableStateOf(st.runpodPricePerSec.toBigDecimal().toPlainString()) }
     var setup by remember { mutableStateOf<TestResult?>(null) }
+    val check = rememberConnectionCheck(
+        graph, "RunPod", SecretStore.Key.RUNPOD_API_KEY,
+        onSave = {
+            graph.settings.update {
+                it.copy(runpodEndpointId = endpoint, runpodModel = model, runpodPricePerSec = price.toDoubleOrNull() ?: it.runpodPricePerSec)
+            }
+        },
+        onTest = { graph.providers.transcriber(graph.settings.get().copy(transcriberId = "ivrit-runpod"))!!.test() },
+    )
     Text(
         "1. Create a RunPod API key (RunPod → Settings → API Keys → Create API Key, access \"All\" or Read/Write) " +
             "and paste it below. RunPod shows it only once.",
@@ -121,7 +130,7 @@ private fun RunPodSection(graph: AppGraph, st: AppSettings) {
     OutlinedButton(onClick = {
         runCatching { ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(RunPodSetup.KEY_PAGE))) }
     }) { Text("Open RunPod API keys") }
-    KeyField(graph, SecretStore.Key.RUNPOD_API_KEY, "RunPod API key")
+    KeyField(check, "RunPod API key")
     Text(
         "2. Tap Set up automatically: CallScribe uses your existing ivrit.ai endpoint, or creates one with 0 idle " +
             "workers — it costs nothing until a call is transcribed.",
@@ -129,8 +138,9 @@ private fun RunPodSection(graph: AppGraph, st: AppSettings) {
     )
     Button(enabled = setup != TestResult.Testing, onClick = {
         scope.launch {
+            check.commitDraft()
             val key = graph.secrets.get(SecretStore.Key.RUNPOD_API_KEY)
-            if (key.isNullOrBlank()) { setup = TestResult.Error("Paste your RunPod API key and tap Save key first."); return@launch }
+            if (key.isNullOrBlank()) { setup = TestResult.NoKey("RunPod"); return@launch }
             setup = TestResult.Testing
             setup = try {
                 val out = RunPodSetup(key).findOrCreate()
@@ -151,16 +161,11 @@ private fun RunPodSection(graph: AppGraph, st: AppSettings) {
     Text("Or fill in your own endpoint:", style = MaterialTheme.typography.bodySmall)
     Field("Endpoint ID", endpoint) { endpoint = it.trim() }
     Field("Model", model) { model = it.trim() }
-    Field("GPU price, USD per second (for cost estimates)", price, KeyboardType.Decimal) { price = it }
+    Field("Worker price, USD per second (for cost estimates)", price, KeyboardType.Decimal) { price = it }
+    Text("RunPod bills the worker's start-up and idle time too. This price is corrected from your RunPod balance after each bulk run.",
+        style = MaterialTheme.typography.bodySmall)
     SwitchRow("Separate speakers (diarization, slower)", st.diarize) { v -> scope.launch { graph.settings.update { it.copy(diarize = v) } } }
-    SaveAndTest(
-        onSave = {
-            graph.settings.update {
-                it.copy(runpodEndpointId = endpoint, runpodModel = model, runpodPricePerSec = price.toDoubleOrNull() ?: it.runpodPricePerSec)
-            }
-        },
-        onTest = { graph.providers.transcriber(graph.settings.get().copy(transcriberId = "ivrit-runpod"))!!.test() },
-    )
+    SaveAndTest(check)
 }
 
 @Composable
@@ -174,19 +179,8 @@ private fun GeminiSection(graph: AppGraph, st: AppSettings) {
     var rpm by remember { mutableStateOf(st.geminiRpm.toString()) }
     var pin by remember { mutableStateOf(st.geminiPriceIn.toString()) }
     var pout by remember { mutableStateOf(st.geminiPriceOut.toString()) }
-    KeyField(graph, SecretStore.Key.GEMINI_API_KEY, "Gemini API key")
-    Field("Model", model) { model = it.trim() }
-    ModelPicker(current = model, recommended = AppSettings().geminiModel, onPick = { model = it }) {
-        val key = graph.secrets.get(SecretStore.Key.GEMINI_API_KEY) ?: throw ProviderError("Save your Gemini API key first.", false)
-        ModelCatalog.gemini(key)
-    }
-    Field("Requests per minute allowed", rpm, KeyboardType.Number) { rpm = it }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Field("$ / M input tokens", pin, KeyboardType.Decimal, Modifier.weight(1f)) { pin = it }
-        Field("$ / M output tokens", pout, KeyboardType.Decimal, Modifier.weight(1f)) { pout = it }
-    }
-    Text("Leave prices at 0 on the free tier.", style = MaterialTheme.typography.bodySmall)
-    SaveAndTest(
+    val check = rememberConnectionCheck(
+        graph, "Gemini", SecretStore.Key.GEMINI_API_KEY,
         onSave = {
             graph.settings.update {
                 it.copy(
@@ -197,6 +191,20 @@ private fun GeminiSection(graph: AppGraph, st: AppSettings) {
         },
         onTest = { graph.providers.analyzer(graph.settings.get())!!.test() },
     )
+    KeyField(check, "Gemini API key")
+    Field("Model", model) { model = it.trim() }
+    ModelPicker(current = model, recommended = AppSettings().geminiModel, onPick = { model = it }) {
+        check.commitDraft()
+        val key = graph.secrets.get(SecretStore.Key.GEMINI_API_KEY) ?: throw ProviderError("No Gemini API key entered: paste it above first.", false)
+        ModelCatalog.gemini(key)
+    }
+    Field("Requests per minute allowed", rpm, KeyboardType.Number) { rpm = it }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Field("$ / M input tokens", pin, KeyboardType.Decimal, Modifier.weight(1f)) { pin = it }
+        Field("$ / M output tokens", pout, KeyboardType.Decimal, Modifier.weight(1f)) { pout = it }
+    }
+    Text("Leave prices at 0 on the free tier.", style = MaterialTheme.typography.bodySmall)
+    SaveAndTest(check)
 }
 
 @Composable
@@ -204,13 +212,15 @@ private fun OpenRouterSection(graph: AppGraph, st: AppSettings) {
     Text("Get a key at openrouter.ai → Keys. Each request is billed; the exact cost is recorded per call. " +
         "Default model anthropic/claude-haiku-5.5 costs about $0.0005 per call.", style = MaterialTheme.typography.bodySmall)
     var model by remember { mutableStateOf(st.openrouterModel) }
-    KeyField(graph, SecretStore.Key.OPENROUTER_API_KEY, "OpenRouter API key")
-    Field("Model (must support structured outputs)", model) { model = it.trim() }
-    ModelPicker(current = model, recommended = AppSettings().openrouterModel, onPick = { model = it }) { ModelCatalog.openRouter() }
-    SaveAndTest(
+    val check = rememberConnectionCheck(
+        graph, "OpenRouter", SecretStore.Key.OPENROUTER_API_KEY,
         onSave = { graph.settings.update { it.copy(openrouterModel = model) } },
         onTest = { graph.providers.analyzer(graph.settings.get())!!.test() },
     )
+    KeyField(check, "OpenRouter API key")
+    Field("Model (must support structured outputs)", model) { model = it.trim() }
+    ModelPicker(current = model, recommended = AppSettings().openrouterModel, onPick = { model = it }) { ModelCatalog.openRouter() }
+    SaveAndTest(check)
 }
 
 @Composable
@@ -218,17 +228,19 @@ private fun ClaudeSection(graph: AppGraph, st: AppSettings) {
     Text("Create an API key at console.anthropic.com.", style = MaterialTheme.typography.bodySmall)
     val models = app.callscribe.providers.claude.ClaudeAnalyzer.PRICES
     var model by remember { mutableStateOf(st.claudeModel) }
-    KeyField(graph, SecretStore.Key.ANTHROPIC_API_KEY, "Anthropic API key")
+    val check = rememberConnectionCheck(
+        graph, "Anthropic", SecretStore.Key.ANTHROPIC_API_KEY,
+        onSave = { graph.settings.update { it.copy(claudeModel = model) } },
+        onTest = { graph.providers.analyzer(graph.settings.get())!!.test() },
+    )
+    KeyField(check, "Anthropic API key")
     models.forEach { (m, p) ->
         Row(Modifier.fillMaxWidth().clickable { model = m }, verticalAlignment = Alignment.CenterVertically) {
             RadioButton(model == m, { model = m })
             Text("$m  ($${p.first} / $${p.second} per M tokens)")
         }
     }
-    SaveAndTest(
-        onSave = { graph.settings.update { it.copy(claudeModel = model) } },
-        onTest = { graph.providers.analyzer(graph.settings.get())!!.test() },
-    )
+    SaveAndTest(check)
 }
 
 
@@ -240,27 +252,89 @@ private fun Field(label: String, value: String, type: KeyboardType = KeyboardTyp
     )
 }
 
-/** Key input: never shows the stored key, only a masked hint; saves immediately on "Save key". */
+/**
+ * Key input: never shows the stored key, only a masked hint. "Save key" saves it and checks the connection in the
+ * background; a key typed but not saved is saved anyway by Save / Test connection / Set up automatically.
+ */
 @Composable
-private fun KeyField(graph: AppGraph, key: SecretStore.Key, label: String) {
-    var value by remember { mutableStateOf("") }
-    var masked by remember { mutableStateOf(graph.secrets.masked(key)) }
+private fun KeyField(check: ConnectionCheck, label: String) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
-            value, { value = it }, label = { Text(label) }, singleLine = true, modifier = Modifier.weight(1f),
-            placeholder = { Text(masked ?: "not set") },
-            supportingText = { Text(if (masked != null) "Saved: $masked" else "Not set") },
+            check.draft, { check.draft = it }, label = { Text(label) }, singleLine = true, modifier = Modifier.weight(1f),
+            placeholder = { Text(check.masked ?: "not set") },
+            supportingText = { Text(if (check.masked != null) "Saved: ${check.masked}" else "Not set") },
             visualTransformation = PasswordVisualTransformation(),
         )
-        OutlinedButton(enabled = value.isNotBlank(), onClick = {
-            graph.secrets.set(key, value); value = ""; masked = graph.secrets.masked(key)
-        }) { Text("Save key") }
+        OutlinedButton(enabled = check.draft.isNotBlank(), onClick = { check.saveAndCheck() }) { Text("Save key") }
     }
+}
+
+/**
+ * One provider's Save / Test connection. The check runs in the app's scope, so it finishes even if the user leaves the
+ * screen; a failure found after they left becomes a notification (on screen it's the red card).
+ */
+private class ConnectionCheck(
+    val graph: AppGraph,
+    val name: String,
+    val key: SecretStore.Key,
+    var onSave: suspend () -> Unit,
+    var onTest: suspend () -> String,
+) {
+    var draft by mutableStateOf("")
+    var masked by mutableStateOf(graph.secrets.masked(key))
+    var result by mutableStateOf<TestResult?>(null)
+    @Volatile var onScreen = true
+
+    /** Saves a key that was typed but not saved yet. */
+    fun commitDraft() {
+        if (draft.isBlank()) return
+        graph.secrets.set(key, draft.trim()); draft = ""; masked = graph.secrets.masked(key)
+    }
+
+    /** Save: store everything, then check the connection in the background. */
+    fun saveAndCheck() {
+        commitDraft()
+        graph.appScope.launch { onSave(); run(afterSave = true) }
+    }
+
+    fun test() {
+        commitDraft()
+        graph.appScope.launch { onSave(); run(afterSave = false) }
+    }
+
+    private suspend fun run(afterSave: Boolean) {
+        if (graph.secrets.get(key).isNullOrBlank()) { result = TestResult.NoKey(name); return }
+        result = if (afterSave) TestResult.Checking else TestResult.Testing
+        val r = try { TestResult.Ok(onTest()) } catch (e: Exception) { TestResult.Error(e.message ?: e.javaClass.simpleName) }
+        result = r
+        if (r is TestResult.Error) {
+            app.callscribe.Logx.w("Providers", "$name connection check failed: ${r.message}")
+            if (!onScreen) graph.notifier.notifyConnectionFailed(name, connectionHint(r.message) ?: r.message)
+        }
+    }
+}
+
+@Composable
+private fun rememberConnectionCheck(
+    graph: AppGraph, name: String, key: SecretStore.Key, onSave: suspend () -> Unit, onTest: suspend () -> String,
+): ConnectionCheck {
+    val check = remember(key) { ConnectionCheck(graph, name, key, onSave, onTest) }
+    check.onSave = onSave // the latest field values
+    check.onTest = onTest
+    androidx.compose.runtime.DisposableEffect(check) {
+        check.onScreen = true
+        onDispose { check.onScreen = false }
+    }
+    return check
 }
 
 private sealed interface TestResult {
     data object Saved : TestResult
     data object Testing : TestResult
+    /** Saved; the connection is being checked in the background. */
+    data object Checking : TestResult
+    /** No key entered at all (instead of letting the provider call fail with "key not working"). */
+    data class NoKey(val provider: String) : TestResult
     data class Ok(val message: String) : TestResult
     data class Error(val message: String) : TestResult
 }
@@ -279,22 +353,13 @@ internal fun connectionHint(message: String): String? {
 }
 
 @Composable
-private fun SaveAndTest(onSave: suspend () -> Unit, onTest: suspend () -> String) {
-    val scope = rememberCoroutineScope()
-    var result by remember { mutableStateOf<TestResult?>(null) }
+private fun SaveAndTest(check: ConnectionCheck) {
+    val busy = check.result == TestResult.Testing || check.result == TestResult.Checking
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(onClick = { scope.launch { onSave(); result = TestResult.Saved } }) { Text("Save") }
-        OutlinedButton(enabled = result != TestResult.Testing, onClick = {
-            scope.launch {
-                onSave()
-                result = TestResult.Testing
-                result = try { TestResult.Ok(onTest()) } catch (e: ProviderError) { TestResult.Error(e.message ?: "error") } catch (e: Exception) {
-                    TestResult.Error(e.message ?: e.javaClass.simpleName)
-                }
-            }
-        }) { Text("Test connection") }
+        Button(onClick = { check.saveAndCheck() }) { Text("Save") }
+        OutlinedButton(enabled = !busy, onClick = { check.test() }) { Text("Test connection") }
     }
-    result?.let { ResultCard(it) }
+    check.result?.let { ResultCard(it) }
 }
 
 /** A large green / red result card, scrolled into view so it isn't missed below the fold. */
@@ -308,7 +373,7 @@ private fun ResultCard(
     val cs = MaterialTheme.colorScheme
     val (bg, fg) = when (r) {
         is TestResult.Ok -> androidx.compose.ui.graphics.Color(0xFFD7F5DD) to androidx.compose.ui.graphics.Color(0xFF0B5A1E)
-        is TestResult.Error -> cs.errorContainer to cs.onErrorContainer
+        is TestResult.Error, is TestResult.NoKey -> cs.errorContainer to cs.onErrorContainer
         else -> cs.surfaceVariant to cs.onSurfaceVariant
     }
     androidx.compose.material3.Card(
@@ -318,9 +383,13 @@ private fun ResultCard(
         androidx.compose.foundation.layout.Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             when (r) {
                 TestResult.Saved -> Text("Saved", style = MaterialTheme.typography.titleMedium)
-                TestResult.Testing -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TestResult.Testing, TestResult.Checking -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     androidx.compose.material3.CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Text(busy, style = MaterialTheme.typography.titleMedium)
+                    Text(if (r == TestResult.Checking) "Saved · checking the connection…" else busy, style = MaterialTheme.typography.titleMedium)
+                }
+                is TestResult.NoKey -> {
+                    Text("✗ No API key entered", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Paste your ${r.provider} API key in the key field above, then tap Test connection.")
                 }
                 is TestResult.Ok -> {
                     Text(okTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
