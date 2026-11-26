@@ -24,7 +24,8 @@ data class Cost(val usd: Double, val detail: String, val gpuMs: Long? = null)
 sealed interface TranscriptionState {
     data class Pending(val status: String) : TranscriptionState
     data class Done(val transcript: Transcript, val cost: Cost?) : TranscriptionState
-    data class Failed(val message: String, val retryable: Boolean) : TranscriptionState
+    /** [resubmit]: the job is gone on the provider's side (e.g. its result expired) — sending the audio again can work. */
+    data class Failed(val message: String, val retryable: Boolean, val resubmit: Boolean = false) : TranscriptionState
 }
 
 class AudioInput(val bytes: ByteArray, val mimeType: String, val fileName: String, val durationMs: Long = 0)

@@ -90,9 +90,10 @@ private fun AppNav(graph: app.callscribe.AppGraph, openId: Long, openRetention: 
                 graph, onBack = { nav.popBackStack() }, onProviders = { nav.navigate("providers") },
                 onRules = { nav.navigate("policies") }, onRetention = { nav.navigate("retention") },
                 onRunSetup = { nav.navigate("setup?start=${SetupStep.WELCOME.name}") },
-                onBackup = { nav.navigate("backup") },
+                onBackup = { nav.navigate("backup") }, onLog = { nav.navigate("log") },
             )
         }
+        composable("log") { LogScreen(onBack = { nav.popBackStack() }) }
         composable("setup?start={start}", arguments = listOf(navArgument("start") { type = NavType.StringType; defaultValue = SetupStep.WELCOME.name })) { e ->
             val start = SetupStep.valueOf(e.arguments?.getString("start") ?: SetupStep.WELCOME.name)
             OnboardingScreen(graph, start, onExit = { nav.popBackStack() }, onFinish = { nav.popBackStack() })

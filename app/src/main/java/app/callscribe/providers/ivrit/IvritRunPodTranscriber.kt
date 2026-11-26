@@ -91,7 +91,8 @@ class IvritRunPodTranscriber(
             .build()
         http.newCall(req).execute().use { resp ->
             val text = resp.body.string()
-            if (resp.code == 404) return@withContext TranscriptionState.Failed("RunPod job expired or not found", retryable = false)
+            // RunPod keeps a finished job's result for 30 minutes only; Android can hold the app's next check back longer.
+            if (resp.code == 404) return@withContext TranscriptionState.Failed(EXPIRED, retryable = false, resubmit = true)
             if (!resp.isSuccessful) throw httpError(resp.code, text)
             parseStatus(text, pricePerSec)
         }
@@ -148,6 +149,7 @@ class IvritRunPodTranscriber(
         private const val BLOB = "__CALLSCRIBE_AUDIO__"
         const val EXECUTION_TIMEOUT_MS = 15 * 60_000
         const val TTL_MS = 2 * 60 * 60_000
+        const val EXPIRED = "RunPod no longer had the result: it keeps results for 30 minutes and Android delayed the app's check"
 
         /**
          * Speaker separation needs enough speech to cluster: on very short calls ivrit.ai's diarization fails the whole

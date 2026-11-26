@@ -47,10 +47,12 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         const val STEP_TRANSCRIBE = "transcribe"
         const val STEP_ANALYZE = "analyze"
         private const val TAG = "ProcessWorker"
-        /** Retries for "still waiting" / temporary provider errors (each attempt polls for up to 4 min). */
+        /** Retries for "still waiting" / temporary provider errors (each attempt polls for up to [POLL_MS]). */
         private const val MAX_ATTEMPTS = 6
         /** Paid uploads per request at most, however many retries happen: retries normally resume the same job. */
         const val MAX_SUBMITS = 2
+        /** How long one attempt waits for the server: under Android's 10-minute limit for a background job. */
+        private const val POLL_MS = 8 * 60_000L
         private val segJson = Json { ignoreUnknownKeys = true }
     }
 
@@ -144,44 +146,54 @@ class ProcessWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         var row = row0
         // Resume a job submitted by an earlier attempt instead of paying twice.
         var jobId = row.providerJobId.takeIf { row.transcriberId == tr.id && !(force && runAttemptCount == 0) }
-        if (jobId == null) {
-            val submits = submitCounts().getInt(this.id.toString(), 0)
-            if (submits >= MAX_SUBMITS) {
-                return Outcome.Fail("Gave up after $submits attempts on the transcription server, to avoid paying again. Tap Transcribe to try once more.")
+        // A job whose result expired is sent once more (counted in MAX_SUBMITS).
+        while (true) {
+            if (jobId == null) {
+                val submits = submitCounts().getInt(this.id.toString(), 0)
+                if (submits >= MAX_SUBMITS) {
+                    return Outcome.Fail("Gave up after $submits attempts on the transcription server, to avoid paying again. Tap Transcribe to try once more.")
+                }
+                submitCounts().edit().putInt(this.id.toString(), submits + 1).apply()
+                dao.setStatus(row.id, Status.TRANSCRIBING)
+                val audio = loadAudio(row, tr.maxUploadBytes)
+                Logx.i(TAG, "call ${row.id}: uploading ${audio.bytes.size / 1024} KB (${row.durationMs / 1000} s audio)")
+                jobId = tr.submit(audio)
+                Logx.i(TAG, "call ${row.id}: submitted")
+                row = dao.get(row.id)!!.copy(providerJobId = jobId, transcriberId = tr.id, status = Status.TRANSCRIBING, error = null)
+                dao.update(row)
             }
-            submitCounts().edit().putInt(this.id.toString(), submits + 1).apply()
-            dao.setStatus(row.id, Status.TRANSCRIBING)
-            val audio = loadAudio(row, tr.maxUploadBytes)
-            Logx.i(TAG, "call ${row.id}: uploading ${audio.bytes.size / 1024} KB (${row.durationMs / 1000} s audio)")
-            jobId = tr.submit(audio)
-            Logx.i(TAG, "call ${row.id}: submitted")
-            row = dao.get(row.id)!!.copy(providerJobId = jobId, transcriberId = tr.id, status = Status.TRANSCRIBING, error = null)
-            dao.update(row)
-        }
 
-        // Poll up to ~4 minutes inside this attempt; cold starts can take a while.
-        val deadline = System.currentTimeMillis() + 4 * 60_000
-        var lastStatus: String? = null
-        while (System.currentTimeMillis() < deadline) {
-            when (val st = tr.poll(jobId)) {
-                is TranscriptionState.Pending -> {
-                    if (st.status != lastStatus) Logx.i(TAG, "call ${row.id}: provider status ${st.status}")
-                    lastStatus = st.status
-                    dao.update(dao.get(row.id)!!.copy(error = "Provider status: ${st.status}"))
-                    delay(4_000)
-                }
-                is TranscriptionState.Failed -> {
-                    dao.update(dao.get(row.id)!!.copy(providerJobId = null))
-                    return if (st.retryable) Outcome.Retry(st.message) else Outcome.Fail(st.message)
-                }
-                is TranscriptionState.Done -> {
-                    Logx.i(TAG, "call ${row.id}: transcribed, cost ${st.cost?.usd}")
-                    saveTranscript(row.id, tr.id, st)
-                    return Outcome.Ok
+            // Poll inside this attempt for as long as Android lets a background job run (10 min): once the app hands back
+            // to WorkManager, a retry can be held back for an hour, longer than RunPod keeps the result.
+            val deadline = System.currentTimeMillis() + POLL_MS
+            var lastStatus: String? = null
+            var expired = false
+            while (System.currentTimeMillis() < deadline && !expired) {
+                when (val st = tr.poll(jobId!!)) {
+                    is TranscriptionState.Pending -> {
+                        if (st.status != lastStatus) Logx.i(TAG, "call ${row.id}: provider status ${st.status}")
+                        lastStatus = st.status
+                        dao.update(dao.get(row.id)!!.copy(error = "Provider status: ${st.status}"))
+                        delay(4_000)
+                    }
+                    is TranscriptionState.Failed -> {
+                        dao.update(dao.get(row.id)!!.copy(providerJobId = null))
+                        if (st.resubmit) {
+                            Logx.w(TAG, "call ${row.id}: ${st.message}; sending again")
+                            jobId = null; expired = true
+                        } else {
+                            return if (st.retryable) Outcome.Retry(st.message) else Outcome.Fail(st.message)
+                        }
+                    }
+                    is TranscriptionState.Done -> {
+                        Logx.i(TAG, "call ${row.id}: transcribed, cost ${st.cost?.usd}")
+                        saveTranscript(row.id, tr.id, st)
+                        return Outcome.Ok
+                    }
                 }
             }
+            if (!expired) return Outcome.Retry("Still waiting for the transcription server")
         }
-        return Outcome.Retry("Still waiting for the transcription server")
     }
 
     private suspend fun saveTranscript(id: Long, transcriberId: String, st: TranscriptionState.Done) {

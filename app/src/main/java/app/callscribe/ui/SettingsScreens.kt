@@ -82,7 +82,7 @@ internal fun Section(title: String) = Text(title, style = MaterialTheme.typograp
 @Composable
 fun SettingsScreen(
     graph: AppGraph, onBack: () -> Unit, onProviders: () -> Unit, onRules: () -> Unit, onRetention: () -> Unit,
-    onRunSetup: () -> Unit, onBackup: () -> Unit,
+    onRunSetup: () -> Unit, onBackup: () -> Unit, onLog: () -> Unit,
 ) {
     val s by graph.settings.flow.collectAsStateWithLifecycle(initialValue = null)
     val scope = rememberCoroutineScope()
@@ -165,7 +165,7 @@ fun SettingsScreen(
         }) { Text("Open battery settings") }
         HorizontalDivider()
 
-        Troubleshooting()
+        Troubleshooting(onLog)
     }
 }
 
@@ -207,7 +207,7 @@ private fun Recommendations(items: List<Recommendation>, onDismiss: (Recommendat
 
 /** Logging controls: detailed logs on/off at runtime, and sharing the log file. */
 @Composable
-private fun Troubleshooting() {
+private fun Troubleshooting(onLog: () -> Unit) {
     val ctx = LocalContext.current
     var detailed by remember { mutableStateOf(app.callscribe.Logx.detailed) }
     Section("Troubleshooting")
@@ -222,13 +222,9 @@ private fun Troubleshooting() {
         style = MaterialTheme.typography.bodySmall,
     )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = {
-            val text = app.callscribe.Logx.text().takeLast(200_000).ifEmpty { "(empty)" }
-            val send = Intent(Intent.ACTION_SEND).setType("text/plain")
-                .putExtra(Intent.EXTRA_SUBJECT, "CallScribe log").putExtra(Intent.EXTRA_TEXT, text)
-            runCatching { ctx.startActivity(Intent.createChooser(send, "Share log")) }
-        }) { Text("Share log") }
-        OutlinedButton(onClick = { app.callscribe.Logx.clear() }) { Text("Clear log") }
+        Button(onClick = onLog) { Text("View log") }
+        OutlinedButton(onClick = { LogView.share(ctx) }) { Text("Share log") }
+        OutlinedButton(onClick = { app.callscribe.Logx.clear() }) { Text("Clear") }
     }
 }
 

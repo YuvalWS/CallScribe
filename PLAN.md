@@ -537,6 +537,8 @@ Built and verified on a Galaxy S20 FE (Android 13, One UI 5.1) with 372 real rec
 - **Google Drive backup & sync** — implemented on branch `claude/drive-backup-*`, see `docs/plans/drive-backup.md`
   (scope changed to `drive.file`, a visible folder). Needs on-device verification once an Android OAuth client exists.
 - Monthly cost totals and a budget alert.
+- **Automatic log collection** (opt-in, the log uploaded to the user's own Google Drive), see
+  `docs/plans/log-collection.md`.
 
 ## 5. Phase 4 (optional, later)
 - **Speaker separation ("who said what")** — show the transcript as a chat: *Me* vs *Caller* (or Speaker 1/2/3 on
